@@ -1,8 +1,12 @@
-import os, json, sqlite3, hashlib, secrets, math
+import os, json, sqlite3, hashlib, secrets, math, time, logging
 from datetime import datetime
 from itertools import combinations
 from functools import wraps
 from flask import Flask, request, redirect, url_for, session, jsonify, g
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
@@ -25,8 +29,10 @@ def get_db():
             g.db.autocommit = True
         else:
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'empire.db')
-            g.db = sqlite3.connect(db_path)
+            g.db = sqlite3.connect(db_path, timeout=10)
             g.db.row_factory = sqlite3.Row
+            g.db.execute('PRAGMA journal_mode=WAL')
+            g.db.execute('PRAGMA busy_timeout=5000')
     return g.db
 
 @app.teardown_appcontext
@@ -58,31 +64,60 @@ def query(sql, args=(), one=False, commit=False):
         return results[0] if one and results else results if not one else None
 
 def init_db():
-    db = get_db()
-    if use_postgres:
-        cur = db.cursor()
-        cur.execute('''CREATE TABLE IF NOT EXISTS players (
-            id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, mmr INTEGER DEFAULT 1000,
-            wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        cur.execute('''CREATE TABLE IF NOT EXISTS matches (
-            id SERIAL PRIMARY KEY, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
-            winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        cur.close()
-    else:
-        cur = db.cursor()
-        cur.execute('''CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, mmr INTEGER DEFAULT 1000,
-            wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        cur.execute('''CREATE TABLE IF NOT EXISTS matches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
-            winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        db.commit()
-        cur.close()
+    """Initialize database tables with retry logic for SQLite locking."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            db = get_db()
+            if use_postgres:
+                cur = db.cursor()
+                cur.execute('''CREATE TABLE IF NOT EXISTS players (
+                    id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, mmr INTEGER DEFAULT 1000,
+                    wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                cur.execute('''CREATE TABLE IF NOT EXISTS matches (
+                    id SERIAL PRIMARY KEY, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
+                    winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                cur.close()
+            else:
+                cur = db.cursor()
+                cur.execute('''CREATE TABLE IF NOT EXISTS players (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, mmr INTEGER DEFAULT 1000,
+                    wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                cur.execute('''CREATE TABLE IF NOT EXISTS matches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
+                    winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                db.commit()
+                cur.close()
+            logger.info('Database initialized successfully.')
+            return
+        except Exception as e:
+            logger.warning(f'init_db attempt {attempt + 1}/{max_retries} failed: {e}')
+            if attempt < max_retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+            else:
+                logger.error('Failed to initialize database after all retries.')
+                raise
 
 with app.app_context():
     init_db()
+
+# ---------- HEALTH CHECK ----------
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Render."""
+    try:
+        if use_postgres:
+            query('SELECT 1')
+        else:
+            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'empire.db')
+            if os.path.exists(db_path):
+                return jsonify({'status': 'ok'}), 200
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        logger.error(f'Health check failed: {e}')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # ---------- ELO ----------
 def expected(ra, rb):

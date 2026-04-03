@@ -3,7 +3,8 @@ services:
     name: empire-earth-mmr
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn app:app --workers 1 --threads 2 --preload --timeout 120 --bind 0.0.0.0:$PORT
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -13,4 +14,6 @@ services:
         value: empire2026
       - key: REQUIRE_MATCH_APPROVAL
         value: "true"
+      - key: WEB_CONCURRENCY
+        value: "1"
     plan: free
