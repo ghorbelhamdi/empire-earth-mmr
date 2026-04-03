@@ -221,22 +221,24 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
 @media(max-width:600px) { .container { padding:16px 8px; } .card { padding:16px; } th,td { padding:8px 6px; font-size:0.9em; } }'''
 
 RENAME_JS = '''
-function renamePlayer(id, currentName) {
+function adminRenamePlayer(id, currentName) {
     var newName = prompt("Rename player '" + currentName + "' to:", currentName);
     if (newName && newName.trim() !== "" && newName.trim() !== currentName) {
         var f = document.createElement("form");
         f.method = "POST"; f.action = "/rename_player";
         var i1 = document.createElement("input"); i1.type = "hidden"; i1.name = "player_id"; i1.value = id;
         var i2 = document.createElement("input"); i2.type = "hidden"; i2.name = "new_name"; i2.value = newName.trim();
-        f.appendChild(i1); f.appendChild(i2); document.body.appendChild(f); f.submit();
+        var i3 = document.createElement("input"); i3.type = "hidden"; i3.name = "redirect"; i3.value = "/admin/panel";
+        f.appendChild(i1); f.appendChild(i2); f.appendChild(i3); document.body.appendChild(f); f.submit();
     }
 }
-function deletePlayer(id, name) {
+function adminDeletePlayer(id, name) {
     if (confirm("Delete player '" + name + "'? This cannot be undone.")) {
         var f = document.createElement("form");
         f.method = "POST"; f.action = "/delete_player";
         var i1 = document.createElement("input"); i1.type = "hidden"; i1.name = "player_id"; i1.value = id;
-        f.appendChild(i1); document.body.appendChild(f); f.submit();
+        var i2 = document.createElement("input"); i2.type = "hidden"; i2.name = "redirect"; i2.value = "/admin/panel";
+        f.appendChild(i1); f.appendChild(i2); document.body.appendChild(f); f.submit();
     }
 }
 '''
@@ -268,14 +270,13 @@ def leaderboard():
         medal = ['&#129351;','&#129352;','&#129353;'][i-1] if i <= 3 else str(i)
         total = p['wins'] + p['losses']
         wr = f"{p['wins']/total*100:.0f}%" if total > 0 else '-'
-        esc_name = p['name'].replace("'", "\\'")
-        actions = f'<div class="actions"><button class="btn btn-sm btn-outline" onclick="renamePlayer({p["id"]}, \'{esc_name}\')">Rename</button><button class="btn btn-sm btn-red" onclick="deletePlayer({p["id"]}, \'{esc_name}\')">Delete</button></div>'
-        rows += f'<tr><td class="rank">{medal}</td><td><strong>{p["name"]}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td><td>{actions}</td></tr>'
+        rows += f'<tr><td class="rank">{medal}</td><td><strong>{p["name"]}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td></tr>'
     empty = '<p style="color:var(--text2);padding:20px;text-align:center">No players yet. Add some!</p>' if not players else ''
-    content = f'<h1>Leaderboard</h1><div class="card"><table><tr><th>#</th><th>Player</th><th>MMR</th><th>W</th><th>L</th><th>WR</th><th>Actions</th></tr>{rows}</table>{empty}</div>'
+    content = f'<h1>Leaderboard</h1><div class="card"><table><tr><th>#</th><th>Player</th><th>MMR</th><th>W</th><th>L</th><th>WR</th></tr>{rows}</table>{empty}</div>'
     return page('Leaderboard', content, 'leaderboard')
 
 @app.route('/rename_player', methods=['POST'])
+@admin_required
 def rename_player_route():
     pid = request.form.get('player_id')
     new_name = request.form.get('new_name', '').strip()
@@ -297,6 +298,7 @@ def rename_player_route():
     return redirect(redirect_to)
 
 @app.route('/delete_player', methods=['POST'])
+@admin_required
 def delete_player_route():
     pid = request.form.get('player_id')
     redirect_to = request.form.get('redirect', '/')
@@ -311,6 +313,8 @@ def delete_player_route():
 
 @app.route('/api/players/rename', methods=['POST'])
 def api_rename_player():
+    if not session.get('is_admin'):
+        return jsonify({'error': 'Admin authentication required'}), 403
     data = request.get_json(silent=True) or {}
     player_id = data.get('player_id')
     new_name = data.get('new_name', '').strip()
@@ -329,6 +333,8 @@ def api_rename_player():
 
 @app.route('/api/players/<name>', methods=['DELETE'])
 def api_delete_player(name):
+    if not session.get('is_admin'):
+        return jsonify({'error': 'Admin authentication required'}), 403
     player = query('SELECT * FROM players WHERE name = ?', (name,), one=True)
     if not player:
         return jsonify({'error': 'Player not found'}), 404
@@ -474,9 +480,9 @@ def admin_panel():
                     <input name="mmr" type="number" value="{p["mmr"]}" style="width:80px;margin:0">
                     <button type="submit" class="btn btn-sm">Set</button>
                 </form>
-                <button class="btn btn-sm btn-outline" onclick="renamePlayer({p['id']}, '{esc_name}')">Rename</button>
+                <button class="btn btn-sm btn-outline" onclick="adminRenamePlayer({p['id']}, '{esc_name}')">Rename</button>
                 <a href="/admin/reset/{p["id"]}" class="btn btn-sm btn-red">Reset</a>
-                <button class="btn btn-sm btn-red" onclick="deletePlayer({p['id']}, '{esc_name}')">Delete</button>
+                <button class="btn btn-sm btn-red" onclick="adminDeletePlayer({p['id']}, '{esc_name}')">Delete</button>
             </div></div>'''
     content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
     return page('Admin Panel', content, 'admin')
