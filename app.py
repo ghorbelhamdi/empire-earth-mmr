@@ -21,10 +21,10 @@ use_postgres = DATABASE_URL.startswith('postgres')
 def get_db():
     if 'db' not in g:
         if use_postgres:
-            import psycopg2, psycopg2.extras
+            import psycopg
+            from psycopg.rows import dict_row
             url = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-            g.db = psycopg2.connect(url)
-            g.db.autocommit = True
+            g.db = psycopg.connect(url, autocommit=True, row_factory=dict_row)
         else:
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'empire.db')
             g.db = sqlite3.connect(db_path, timeout=10)
@@ -42,8 +42,7 @@ def close_db(exc):
 def query(sql, args=(), one=False, commit=False):
     db = get_db()
     if use_postgres:
-        import psycopg2.extras
-        cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = db.cursor()
         sql = sql.replace('?', '%s').replace('AUTOINCREMENT', '').replace('INTEGER PRIMARY KEY', 'SERIAL PRIMARY KEY')
     else:
         cur = db.cursor()
@@ -101,16 +100,19 @@ with app.app_context():
 
 @app.route('/health')
 def health_check():
+    backend = 'postgres' if use_postgres else 'sqlite'
     try:
         if use_postgres:
             query('SELECT 1')
         else:
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'empire.db')
-            if os.path.exists(db_path):
-                return jsonify({'status': 'ok'}), 200
-        return jsonify({'status': 'ok'}), 200
+            if not os.path.exists(db_path):
+                return jsonify({'status': 'error', 'backend': backend, 'message': 'sqlite db not found'}), 500
+        players = query('SELECT COUNT(*) as cnt FROM players')
+        count = players[0]['cnt'] if players else 0
+        return jsonify({'status': 'ok', 'backend': backend, 'player_count': count}), 200
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return jsonify({'status': 'error', 'backend': backend, 'message': str(e)}), 500
 
 def rename_player_in_matches(old_name, new_name):
     matches = query('SELECT * FROM matches')
