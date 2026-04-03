@@ -73,7 +73,11 @@ def init_db():
                 cur.execute('''CREATE TABLE IF NOT EXISTS matches (
                     id SERIAL PRIMARY KEY, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
                     winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
+                    match_type TEXT DEFAULT 'team',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                cur.execute("""DO $$ BEGIN
+                    ALTER TABLE matches ADD COLUMN match_type TEXT DEFAULT 'team';
+                EXCEPTION WHEN duplicate_column THEN NULL; END $$;""")
                 cur.close()
             else:
                 cur = db.cursor()
@@ -83,7 +87,12 @@ def init_db():
                 cur.execute('''CREATE TABLE IF NOT EXISTS matches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
                     winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
+                    match_type TEXT DEFAULT 'team',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                try:
+                    cur.execute("ALTER TABLE matches ADD COLUMN match_type TEXT DEFAULT 'team'")
+                except:
+                    pass
                 db.commit()
                 cur.close()
             logger.info('Database initialized successfully.')
@@ -97,6 +106,7 @@ def init_db():
 
 with app.app_context():
     init_db()
+
 
 @app.route('/health')
 def health_check():
@@ -146,6 +156,21 @@ def team_avg_mmr(players_list):
         return 0
     return sum(p['mmr'] for p in players_list) / len(players_list)
 
+def ffa_mmr_calculate(rankings):
+    """Calculate MMR changes for FFA. rankings ordered by finish (index 0 = 1st)."""
+    n = len(rankings)
+    changes = {p['name']: 0.0 for p in rankings}
+    for i in range(n):
+        for j in range(i + 1, n):
+            winner = rankings[i]
+            loser = rankings[j]
+            delta = elo_update(winner['mmr'], loser['mmr'])
+            changes[winner['name']] += delta
+            changes[loser['name']] -= delta
+    for p in rankings:
+        changes[p['name']] = round(changes[p['name']] / (n - 1))
+    return changes
+
 def balance_teams(player_ids):
     players = []
     for pid in player_ids:
@@ -176,6 +201,7 @@ def admin_required(f):
             return redirect(url_for('admin_login'))
         return f(*args, **kwargs)
     return decorated
+
 
 CSS = ''':root { --bg: #0f1117; --surface: #1a1d27; --surface2: #242837; --border: #2d3148; --text: #e4e6f0;
   --text2: #9ea2b8; --accent: #6c5ce7; --accent2: #a29bfe; --green: #00b894; --red: #e17055; --gold: #fdcb6e; }
@@ -216,9 +242,20 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
 .badge-pending { background:rgba(253,203,110,0.2); color:var(--gold); }
 .badge-approved { background:rgba(0,184,148,0.2); color:var(--green); }
 .badge-denied { background:rgba(225,112,85,0.2); color:var(--red); }
+.badge-ffa { background:rgba(162,155,254,0.2); color:var(--accent2); }
+.badge-team { background:rgba(108,92,231,0.15); color:var(--accent); }
 .win { color:var(--green); } .loss { color:var(--red); }
 .actions { display:flex; gap:4px; }
+.ffa-ranking-list { margin:12px 0; }
+.ffa-ranking-item { display:flex; align-items:center; gap:10px; background:var(--surface2); padding:10px 14px; border-radius:8px; margin-bottom:6px; border:1px solid var(--border); }
+.ffa-ranking-item .ffa-pos { font-weight:700; color:var(--gold); min-width:30px; font-size:1.1em; }
+.ffa-ranking-item .ffa-name { flex:1; font-weight:500; }
+.ffa-ranking-item .ffa-mmr { color:var(--accent2); font-size:0.9em; }
+.ffa-ranking-item .ffa-btns { display:flex; gap:4px; }
+.ffa-ranking-item .ffa-btns button { padding:4px 10px; font-size:0.85em; background:var(--surface); border:1px solid var(--border); color:var(--text); }
+.ffa-ranking-item .ffa-btns button:hover { background:var(--accent); border-color:var(--accent); }
 @media(max-width:600px) { .container { padding:16px 8px; } .card { padding:16px; } th,td { padding:8px 6px; font-size:0.9em; } }'''
+
 
 RENAME_JS = '''
 function adminRenamePlayer(id, currentName) {
@@ -243,9 +280,62 @@ function adminDeletePlayer(id, name) {
 }
 '''
 
+FFA_JS = '''
+var ffaSelected = [];
+var ffaPlayers = {};
+function ffaToggle(id, name, mmr) {
+    var idx = ffaSelected.indexOf(id);
+    if (idx > -1) {
+        ffaSelected.splice(idx, 1);
+    } else {
+        ffaSelected.push(id);
+    }
+    ffaPlayers[id] = {name: name, mmr: mmr};
+    ffaRender();
+}
+function ffaMove(id, dir) {
+    var idx = ffaSelected.indexOf(id);
+    var newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= ffaSelected.length) return;
+    ffaSelected.splice(idx, 1);
+    ffaSelected.splice(newIdx, 0, id);
+    ffaRender();
+}
+function ffaRender() {
+    var list = document.getElementById("ffa-ranking");
+    var hidden = document.getElementById("ffa-hidden-inputs");
+    list.innerHTML = "";
+    hidden.innerHTML = "";
+    if (ffaSelected.length === 0) {
+        list.innerHTML = '<p style="color:var(--text2);padding:8px">Select players above, then reorder them by finishing position.</p>';
+        return;
+    }
+    for (var i = 0; i < ffaSelected.length; i++) {
+        var id = ffaSelected[i];
+        var p = ffaPlayers[id];
+        var pos = i + 1;
+        var suffix = pos === 1 ? "st" : pos === 2 ? "nd" : pos === 3 ? "rd" : "th";
+        var li = document.createElement("div");
+        li.className = "ffa-ranking-item";
+        li.innerHTML = '<span class="ffa-pos">' + pos + suffix + '</span>' +
+            '<span class="ffa-name">' + p.name + '</span>' +
+            '<span class="ffa-mmr">(' + p.mmr + ' MMR)</span>' +
+            '<span class="ffa-btns">' +
+            '<button type="button" onclick="ffaMove(' + id + ',-1)">&uarr;</button>' +
+            '<button type="button" onclick="ffaMove(' + id + ',1)">&darr;</button>' +
+            '</span>';
+        list.appendChild(li);
+        var inp = document.createElement("input");
+        inp.type = "hidden"; inp.name = "ranking"; inp.value = id;
+        hidden.appendChild(inp);
+    }
+}
+'''
+
 def page(title, content, nav_active=''):
     nav_items = [('/', 'Leaderboard', 'leaderboard'),
-        ('/submit_match', 'Submit Match', 'match'), ('/balance', 'Team Balancer', 'balance'),
+        ('/submit_match', 'Submit Match', 'match'), ('/submit_ffa', 'Submit FFA', 'ffa'),
+        ('/balance', 'Team Balancer', 'balance'),
         ('/history', 'Match History', 'history'), ('/admin', 'Admin', 'admin')]
     nav_html = ''
     for href, label, key in nav_items:
@@ -260,6 +350,7 @@ def page(title, content, nav_active=''):
 
 def flash_html(msg, type='success'):
     return f'<div class="flash flash-{type}">{msg}</div>'
+
 
 # ---------- ROUTES ----------
 @app.route('/')
@@ -391,8 +482,8 @@ def submit_match():
             for p in l_team:
                 changes[p['name']] = f'-{delta}'
             status = 'pending' if REQUIRE_MATCH_APPROVAL else 'approved'
-            query('INSERT INTO matches (team1, team2, winner, mmr_changes, status) VALUES (?,?,?,?,?)',
-                  (json.dumps(t1_names), json.dumps(t2_names), winner, json.dumps(changes), status), commit=True)
+            query('INSERT INTO matches (team1, team2, winner, mmr_changes, status, match_type) VALUES (?,?,?,?,?,?)',
+                  (json.dumps(t1_names), json.dumps(t2_names), winner, json.dumps(changes), status, 'team'), commit=True)
             if status == 'approved':
                 for p in w_team:
                     query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
@@ -405,6 +496,68 @@ def submit_match():
     checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}">{p["name"]} ({p["mmr"]})</label>' for p in players)
     content = f'<h1>Submit Match Result</h1>{msg}<div class="card"><form method="post"><label>Team 1</label><div class="checkbox-grid">{checks1}</div><label>Team 2</label><div class="checkbox-grid">{checks2}</div><label>Winner</label><select name="winner"><option value="team1">Team 1</option><option value="team2">Team 2</option></select><button type="submit">Submit Match</button></form></div>'
     return page('Submit Match', content, 'match')
+
+
+@app.route('/submit_ffa', methods=['GET','POST'])
+def submit_ffa():
+    msg = ''
+    players = query('SELECT * FROM players ORDER BY name')
+    if request.method == 'POST':
+        ranking_ids = request.form.getlist('ranking')
+        if len(ranking_ids) < 3:
+            msg = flash_html('FFA requires at least 3 players.', 'error')
+        elif len(ranking_ids) != len(set(ranking_ids)):
+            msg = flash_html('Duplicate players detected.', 'error')
+        else:
+            ranked_players = []
+            for pid_str in ranking_ids:
+                p = query('SELECT * FROM players WHERE id = ?', (int(pid_str),), one=True)
+                if p:
+                    ranked_players.append(p)
+            if len(ranked_players) < 3:
+                msg = flash_html('Could not find all selected players.', 'error')
+            else:
+                ranked_names = [p['name'] for p in ranked_players]
+                changes_raw = ffa_mmr_calculate(ranked_players)
+                changes = {}
+                for name, delta in changes_raw.items():
+                    changes[name] = f'+{delta}' if delta >= 0 else str(delta)
+                status = 'pending' if REQUIRE_MATCH_APPROVAL else 'approved'
+                query('INSERT INTO matches (team1, team2, winner, mmr_changes, status, match_type) VALUES (?,?,?,?,?,?)',
+                      (json.dumps(ranked_names), json.dumps([]), 'ffa', json.dumps(changes), status, 'ffa'), commit=True)
+                if status == 'approved':
+                    n = len(ranked_players)
+                    for i, p in enumerate(ranked_players):
+                        delta = changes_raw[p['name']]
+                        if i < n // 2:
+                            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
+                        elif i >= (n + 1) // 2:
+                            query('UPDATE players SET mmr=mmr+?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
+                        else:
+                            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
+                    change_summary = ', '.join(f'{name}: {changes[name]}' for name in ranked_names)
+                    msg = flash_html(f'FFA match recorded! Changes: {change_summary}')
+                else:
+                    change_summary = ', '.join(f'{name}: {changes[name]}' for name in ranked_names)
+                    msg = flash_html(f'FFA match submitted for admin approval. Estimated changes: {change_summary}')
+    checks = ''
+    for p in players:
+        esc = p["name"].replace("'", "\\\\'")
+        checks += f'<label><input type="checkbox" onchange="ffaToggle({p["id"]},\'{esc}\',{p["mmr"]})">{p["name"]} ({p["mmr"]})</label>'
+    content = f'''<script>{FFA_JS}</script>
+<h1>Submit FFA Match</h1>{msg}
+<div class="card">
+<form method="post">
+<label>Select Players (3+ required)</label>
+<div class="checkbox-grid">{checks}</div>
+<label style="margin-top:16px">Finishing Order (1st place on top, use arrows to reorder)</label>
+<div id="ffa-ranking" class="ffa-ranking-list">
+<p style="color:var(--text2);padding:8px">Select players above, then reorder them by finishing position.</p>
+</div>
+<div id="ffa-hidden-inputs"></div>
+<button type="submit" style="margin-top:12px">Submit FFA Match</button>
+</form></div>'''
+    return page('Submit FFA', content, 'ffa')
 
 @app.route('/balance', methods=['GET','POST'])
 def balance():
@@ -425,6 +578,7 @@ def balance():
     content = f'<h1>Team Balancer</h1><div class="card"><form method="post"><label>Select Players</label><div class="checkbox-grid">{checks}</div><button type="submit">Balance Teams</button></form></div>{result}'
     return page('Team Balancer', content, 'balance')
 
+
 @app.route('/history')
 def history():
     matches = query('SELECT * FROM matches ORDER BY id DESC')
@@ -434,12 +588,27 @@ def history():
         t2 = json.loads(m['team2'])
         changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
         badge_cls = {'pending':'badge-pending','approved':'badge-approved','denied':'badge-denied'}.get(m['status'],'')
-        winner_label = 'Team 1' if m['winner'] == 'team1' else 'Team 2'
+        match_type = m.get('match_type', 'team') or 'team'
         change_str = ', '.join(f'{k}: {v}' for k,v in changes.items())
-        rows += f'<tr><td>{m["id"]}</td><td>{", ".join(t1)}</td><td>{", ".join(t2)}</td><td><strong>{winner_label}</strong></td><td style="font-size:0.85em">{change_str}</td><td><span class="badge {badge_cls}">{m["status"]}</span></td></tr>'
+        if match_type == 'ffa':
+            rankings_html = ''
+            for i, name in enumerate(t1):
+                pos = i + 1
+                suffix = {1:'st',2:'nd',3:'rd'}.get(pos, 'th')
+                chg = changes.get(name, '')
+                chg_class = 'win' if chg.startswith('+') and chg != '+0' else 'loss' if chg.startswith('-') else ''
+                rankings_html += f'<span class="{chg_class}">{pos}{suffix} {name} ({chg})</span>, '
+            rankings_html = rankings_html.rstrip(', ')
+            type_badge = '<span class="badge badge-ffa">FFA</span>'
+            rows += f'<tr><td>{m["id"]}</td><td colspan="2" style="font-size:0.9em">{rankings_html}</td><td>{type_badge}</td><td style="font-size:0.85em">{change_str}</td><td><span class="badge {badge_cls}">{m["status"]}</span></td></tr>'
+        else:
+            winner_label = 'Team 1' if m['winner'] == 'team1' else 'Team 2'
+            type_badge = '<span class="badge badge-team">Team</span>'
+            rows += f'<tr><td>{m["id"]}</td><td>{", ".join(t1)}</td><td>{", ".join(t2)}</td><td><strong>{winner_label}</strong> {type_badge}</td><td style="font-size:0.85em">{change_str}</td><td><span class="badge {badge_cls}">{m["status"]}</span></td></tr>'
     empty = '<p style="color:var(--text2);padding:20px;text-align:center">No matches yet.</p>' if not matches else ''
     content = f'<h1>Match History</h1><div class="card"><table><tr><th>#</th><th>Team 1</th><th>Team 2</th><th>Winner</th><th>MMR Changes</th><th>Status</th></tr>{rows}</table>{empty}</div>'
     return page('Match History', content, 'history')
+
 
 # ---------- ADMIN ----------
 @app.route('/admin', methods=['GET','POST'])
@@ -465,9 +634,21 @@ def admin_panel():
         t1 = json.loads(m['team1'])
         t2 = json.loads(m['team2'])
         changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
-        winner_label = 'Team 1' if m['winner'] == 'team1' else 'Team 2'
+        match_type = m.get('match_type', 'team') or 'team'
         change_str = ', '.join(f'{k}: {v}' for k,v in changes.items())
-        pending_html += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><strong>Match #{m["id"]}</strong><br>{", ".join(t1)} vs {", ".join(t2)}<br>Winner: {winner_label} | Changes: {change_str}</div><div><a href="/admin/approve/{m["id"]}" class="btn btn-green" style="margin-right:8px">Approve</a><a href="/admin/deny/{m["id"]}" class="btn btn-red">Deny</a></div></div>'
+        if match_type == 'ffa':
+            rankings_str = ''
+            for i, name in enumerate(t1):
+                pos = i + 1
+                suffix = {1:'st',2:'nd',3:'rd'}.get(pos, 'th')
+                rankings_str += f'{pos}{suffix} {name}, '
+            rankings_str = rankings_str.rstrip(', ')
+            type_badge = '<span class="badge badge-ffa" style="margin-left:6px">FFA</span>'
+            pending_html += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><strong>Match #{m["id"]}</strong>{type_badge}<br>{rankings_str}<br>Changes: {change_str}</div><div><a href="/admin/approve/{m["id"]}" class="btn btn-green" style="margin-right:8px">Approve</a><a href="/admin/deny/{m["id"]}" class="btn btn-red">Deny</a></div></div>'
+        else:
+            winner_label = 'Team 1' if m['winner'] == 'team1' else 'Team 2'
+            type_badge = '<span class="badge badge-team" style="margin-left:6px">Team</span>'
+            pending_html += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><strong>Match #{m["id"]}</strong>{type_badge}<br>{", ".join(t1)} vs {", ".join(t2)}<br>Winner: {winner_label} | Changes: {change_str}</div><div><a href="/admin/approve/{m["id"]}" class="btn btn-green" style="margin-right:8px">Approve</a><a href="/admin/deny/{m["id"]}" class="btn btn-red">Deny</a></div></div>'
     if not pending:
         pending_html = '<p style="color:var(--text2)">No pending matches.</p>'
     player_rows = ''
@@ -494,16 +675,30 @@ def approve_match(match_id):
     m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'pending'), one=True)
     if m:
         changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
-        t1_names = json.loads(m['team1'])
-        t2_names = json.loads(m['team2'])
-        w_names = t1_names if m['winner'] == 'team1' else t2_names
-        l_names = t2_names if m['winner'] == 'team1' else t1_names
-        for name in w_names:
-            delta = int(changes.get(name, '+0').replace('+',''))
-            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE name=?', (delta, name), commit=True)
-        for name in l_names:
-            delta = abs(int(changes.get(name, '-0').replace('-','')))
-            query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE name=?', (delta, name), commit=True)
+        match_type = m.get('match_type', 'team') or 'team'
+        if match_type == 'ffa':
+            ranked_names = json.loads(m['team1'])
+            n = len(ranked_names)
+            for i, name in enumerate(ranked_names):
+                chg_str = changes.get(name, '+0')
+                delta = int(chg_str.replace('+', ''))
+                if i < n // 2:
+                    query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE name=?', (delta, name), commit=True)
+                elif i >= (n + 1) // 2:
+                    query('UPDATE players SET mmr=mmr+?, losses=losses+1 WHERE name=?', (delta, name), commit=True)
+                else:
+                    query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE name=?', (delta, name), commit=True)
+        else:
+            t1_names = json.loads(m['team1'])
+            t2_names = json.loads(m['team2'])
+            w_names = t1_names if m['winner'] == 'team1' else t2_names
+            l_names = t2_names if m['winner'] == 'team1' else t1_names
+            for name in w_names:
+                delta = int(changes.get(name, '+0').replace('+',''))
+                query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE name=?', (delta, name), commit=True)
+            for name in l_names:
+                delta = abs(int(changes.get(name, '-0').replace('-','')))
+                query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE name=?', (delta, name), commit=True)
         query('UPDATE matches SET status=? WHERE id=?', ('approved', match_id), commit=True)
     return redirect(url_for('admin_panel'))
 
