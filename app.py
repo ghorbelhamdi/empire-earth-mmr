@@ -4,7 +4,6 @@ from itertools import combinations
 from functools import wraps
 from flask import Flask, request, redirect, url_for, session, jsonify, g
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -17,7 +16,6 @@ REQUIRE_MATCH_APPROVAL = os.environ.get('REQUIRE_MATCH_APPROVAL', 'true').lower(
 DEFAULT_MMR = 1000
 K_FACTOR = 32
 
-# ---------- DATABASE ----------
 use_postgres = DATABASE_URL.startswith('postgres')
 
 def get_db():
@@ -64,7 +62,6 @@ def query(sql, args=(), one=False, commit=False):
         return results[0] if one and results else results if not one else None
 
 def init_db():
-    """Initialize database tables with retry logic for SQLite locking."""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -97,16 +94,13 @@ def init_db():
             if attempt < max_retries - 1:
                 time.sleep(0.5 * (attempt + 1))
             else:
-                logger.error('Failed to initialize database after all retries.')
                 raise
 
 with app.app_context():
     init_db()
 
-# ---------- HEALTH CHECK ----------
 @app.route('/health')
 def health_check():
-    """Health check endpoint for Render."""
     try:
         if use_postgres:
             query('SELECT 1')
@@ -116,24 +110,40 @@ def health_check():
                 return jsonify({'status': 'ok'}), 200
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
-        logger.error(f'Health check failed: {e}')
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# ---------- ELO ----------
+def rename_player_in_matches(old_name, new_name):
+    matches = query('SELECT * FROM matches')
+    for m in matches:
+        changed = False
+        t1 = json.loads(m['team1'])
+        t2 = json.loads(m['team2'])
+        changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
+        if old_name in t1:
+            t1 = [new_name if n == old_name else n for n in t1]
+            changed = True
+        if old_name in t2:
+            t2 = [new_name if n == old_name else n for n in t2]
+            changed = True
+        if old_name in changes:
+            changes[new_name] = changes.pop(old_name)
+            changed = True
+        if changed:
+            query('UPDATE matches SET team1=?, team2=?, mmr_changes=? WHERE id=?',
+                  (json.dumps(t1), json.dumps(t2), json.dumps(changes), m['id']), commit=True)
+
 def expected(ra, rb):
     return 1.0 / (1 + 10 ** ((rb - ra) / 400.0))
 
 def elo_update(winner_mmr, loser_mmr):
     e = expected(winner_mmr, loser_mmr)
-    delta = round(K_FACTOR * (1 - e))
-    return delta
+    return round(K_FACTOR * (1 - e))
 
 def team_avg_mmr(players_list):
     if not players_list:
         return 0
     return sum(p['mmr'] for p in players_list) / len(players_list)
 
-# ---------- TEAM BALANCER ----------
 def balance_teams(player_ids):
     players = []
     for pid in player_ids:
@@ -144,26 +154,19 @@ def balance_teams(player_ids):
     if n < 2:
         return None, None, None
     best_diff = float('inf')
-    best_t1 = None
-    best_t2 = None
+    best_t1 = best_t2 = None
     half = n // 2
-    sizes = [half]
-    if n % 2 == 1:
-        sizes = [half, half + 1]
+    sizes = [half] if n % 2 == 0 else [half, half + 1]
     for sz in sizes:
         for combo in combinations(range(n), sz):
             t1 = [players[i] for i in combo]
             t2 = [players[i] for i in range(n) if i not in combo]
-            avg1 = team_avg_mmr(t1)
-            avg2 = team_avg_mmr(t2)
-            diff = abs(avg1 - avg2)
+            diff = abs(team_avg_mmr(t1) - team_avg_mmr(t2))
             if diff < best_diff:
                 best_diff = diff
-                best_t1 = t1
-                best_t2 = t2
+                best_t1, best_t2 = t1, t2
     return best_t1, best_t2, best_diff
 
-# ---------- AUTH ----------
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -172,7 +175,6 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# ---------- HTML TEMPLATE ----------
 CSS = ''':root { --bg: #0f1117; --surface: #1a1d27; --surface2: #242837; --border: #2d3148; --text: #e4e6f0;
   --text2: #9ea2b8; --accent: #6c5ce7; --accent2: #a29bfe; --green: #00b894; --red: #e17055; --gold: #fdcb6e; }
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -193,8 +195,11 @@ input,select { background:var(--surface2); border:1px solid var(--border); color
 input:focus,select:focus { outline:none; border-color:var(--accent); }
 button,.btn { background:var(--accent); color:white; border:none; padding:10px 20px; border-radius:8px; font-size:1em; cursor:pointer; transition:background .2s; display:inline-block; text-decoration:none; }
 button:hover,.btn:hover { background:var(--accent2); }
+.btn-sm { padding:4px 10px; font-size:0.8em; border-radius:6px; }
 .btn-green { background:var(--green); } .btn-red { background:var(--red); }
 .btn-green:hover { background:#00d2a0; } .btn-red:hover { background:#e08060; }
+.btn-outline { background:transparent; border:1px solid var(--border); color:var(--text2); }
+.btn-outline:hover { border-color:var(--accent); color:var(--text); }
 label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
 .flash { padding:12px 16px; border-radius:8px; margin-bottom:16px; font-size:0.95em; }
 .flash-success { background:rgba(0,184,148,0.15); color:var(--green); border:1px solid rgba(0,184,148,0.3); }
@@ -210,26 +215,42 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
 .badge-approved { background:rgba(0,184,148,0.2); color:var(--green); }
 .badge-denied { background:rgba(225,112,85,0.2); color:var(--red); }
 .win { color:var(--green); } .loss { color:var(--red); }
+.actions { display:flex; gap:4px; }
 @media(max-width:600px) { .container { padding:16px 8px; } .card { padding:16px; } th,td { padding:8px 6px; font-size:0.9em; } }'''
 
+RENAME_JS = '''
+function renamePlayer(id, currentName) {
+    var newName = prompt("Rename player '" + currentName + "' to:", currentName);
+    if (newName && newName.trim() !== "" && newName.trim() !== currentName) {
+        var f = document.createElement("form");
+        f.method = "POST"; f.action = "/rename_player";
+        var i1 = document.createElement("input"); i1.type = "hidden"; i1.name = "player_id"; i1.value = id;
+        var i2 = document.createElement("input"); i2.type = "hidden"; i2.name = "new_name"; i2.value = newName.trim();
+        f.appendChild(i1); f.appendChild(i2); document.body.appendChild(f); f.submit();
+    }
+}
+function deletePlayer(id, name) {
+    if (confirm("Delete player '" + name + "'? This cannot be undone.")) {
+        var f = document.createElement("form");
+        f.method = "POST"; f.action = "/delete_player";
+        var i1 = document.createElement("input"); i1.type = "hidden"; i1.name = "player_id"; i1.value = id;
+        f.appendChild(i1); document.body.appendChild(f); f.submit();
+    }
+}
+'''
+
 def page(title, content, nav_active=''):
-    nav_items = [
-        ('/', 'Leaderboard', 'leaderboard'),
-        ('/add_player', 'Add Player', 'add'),
-        ('/submit_match', 'Submit Match', 'match'),
-        ('/balance', 'Team Balancer', 'balance'),
-        ('/history', 'Match History', 'history'),
-        ('/admin', 'Admin', 'admin'),
-    ]
+    nav_items = [('/', 'Leaderboard', 'leaderboard'), ('/add_player', 'Add Player', 'add'),
+        ('/submit_match', 'Submit Match', 'match'), ('/balance', 'Team Balancer', 'balance'),
+        ('/history', 'Match History', 'history'), ('/admin', 'Admin', 'admin')]
     nav_html = ''
     for href, label, key in nav_items:
         active = ' active' if key == nav_active else ''
         nav_html += f'<a href="{href}" class="nav-link{active}">{label}</a>'
-
     return f'''<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title} - Empire Earth MMR</title>
-<style>{CSS}</style></head><body>
+<title>{title} - Empire Earth MMR</title><style>{CSS}</style></head><body>
+<script>{RENAME_JS}</script>
 <nav class="navbar"><span class="brand">Empire Earth MMR</span>{nav_html}</nav>
 <div class="container">{content}</div></body></html>'''
 
@@ -245,10 +266,75 @@ def leaderboard():
         medal = ['&#129351;','&#129352;','&#129353;'][i-1] if i <= 3 else str(i)
         total = p['wins'] + p['losses']
         wr = f"{p['wins']/total*100:.0f}%" if total > 0 else '-'
-        rows += f'<tr><td class="rank">{medal}</td><td><strong>{p["name"]}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td></tr>'
+        esc_name = p['name'].replace("'", "\\'")
+        actions = f'<div class="actions"><button class="btn btn-sm btn-outline" onclick="renamePlayer({p["id"]}, \'{esc_name}\')">Rename</button><button class="btn btn-sm btn-red" onclick="deletePlayer({p["id"]}, \'{esc_name}\')">Delete</button></div>'
+        rows += f'<tr><td class="rank">{medal}</td><td><strong>{p["name"]}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td><td>{actions}</td></tr>'
     empty = '<p style="color:var(--text2);padding:20px;text-align:center">No players yet. Add some!</p>' if not players else ''
-    content = f'<h1>Leaderboard</h1><div class="card"><table><tr><th>#</th><th>Player</th><th>MMR</th><th>W</th><th>L</th><th>WR</th></tr>{rows}</table>{empty}</div>'
+    content = f'<h1>Leaderboard</h1><div class="card"><table><tr><th>#</th><th>Player</th><th>MMR</th><th>W</th><th>L</th><th>WR</th><th>Actions</th></tr>{rows}</table>{empty}</div>'
     return page('Leaderboard', content, 'leaderboard')
+
+@app.route('/rename_player', methods=['POST'])
+def rename_player_route():
+    pid = request.form.get('player_id')
+    new_name = request.form.get('new_name', '').strip()
+    redirect_to = request.form.get('redirect', '/')
+    if not pid or not new_name:
+        return redirect(redirect_to)
+    player = query('SELECT * FROM players WHERE id = ?', (int(pid),), one=True)
+    if not player:
+        return redirect(redirect_to)
+    old_name = player['name']
+    if old_name == new_name:
+        return redirect(redirect_to)
+    try:
+        query('UPDATE players SET name=? WHERE id=?', (new_name, int(pid)), commit=True)
+        rename_player_in_matches(old_name, new_name)
+        logger.info(f'Player renamed: {old_name} -> {new_name}')
+    except Exception as e:
+        logger.error(f'Rename failed: {e}')
+    return redirect(redirect_to)
+
+@app.route('/delete_player', methods=['POST'])
+def delete_player_route():
+    pid = request.form.get('player_id')
+    redirect_to = request.form.get('redirect', '/')
+    if not pid:
+        return redirect(redirect_to)
+    try:
+        query('DELETE FROM players WHERE id=?', (int(pid),), commit=True)
+        logger.info(f'Player deleted: id={pid}')
+    except Exception as e:
+        logger.error(f'Delete failed: {e}')
+    return redirect(redirect_to)
+
+@app.route('/api/players/rename', methods=['POST'])
+def api_rename_player():
+    data = request.get_json(silent=True) or {}
+    player_id = data.get('player_id')
+    new_name = data.get('new_name', '').strip()
+    if not player_id or not new_name:
+        return jsonify({'error': 'player_id and new_name are required'}), 400
+    player = query('SELECT * FROM players WHERE id = ?', (int(player_id),), one=True)
+    if not player:
+        return jsonify({'error': 'Player not found'}), 404
+    old_name = player['name']
+    try:
+        query('UPDATE players SET name=? WHERE id=?', (new_name, int(player_id)), commit=True)
+        rename_player_in_matches(old_name, new_name)
+        return jsonify({'success': True, 'old_name': old_name, 'new_name': new_name}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/players/<name>', methods=['DELETE'])
+def api_delete_player(name):
+    player = query('SELECT * FROM players WHERE name = ?', (name,), one=True)
+    if not player:
+        return jsonify({'error': 'Player not found'}), 404
+    try:
+        query('DELETE FROM players WHERE name=?', (name,), commit=True)
+        return jsonify({'success': True, 'deleted': name}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/add_player', methods=['GET','POST'])
 def add_player():
@@ -324,8 +410,7 @@ def balance():
             if t1 and t2:
                 t1_html = ''.join(f'<div>{p["name"]} <span class="mmr">({p["mmr"]})</span></div>' for p in t1)
                 t2_html = ''.join(f'<div>{p["name"]} <span class="mmr">({p["mmr"]})</span></div>' for p in t2)
-                avg1 = team_avg_mmr(t1)
-                avg2 = team_avg_mmr(t2)
+                avg1, avg2 = team_avg_mmr(t1), team_avg_mmr(t2)
                 result = f'<div class="card"><h3 style="margin-bottom:12px">Balanced Teams (MMR diff: {diff:.0f})</h3><div class="teams-row"><div class="team-card"><h3 style="color:var(--accent2)">Team 1 <span style="font-size:0.8em;color:var(--text2)">avg {avg1:.0f}</span></h3>{t1_html}</div><div class="vs">VS</div><div class="team-card"><h3 style="color:var(--gold)">Team 2 <span style="font-size:0.8em;color:var(--text2)">avg {avg2:.0f}</span></h3>{t2_html}</div></div></div>'
     checks = ''.join(f'<label><input type="checkbox" name="players" value="{p["id"]}">{p["name"]} ({p["mmr"]})</label>' for p in players)
     content = f'<h1>Team Balancer</h1><div class="card"><form method="post"><label>Select Players</label><div class="checkbox-grid">{checks}</div><button type="submit">Balance Teams</button></form></div>{result}'
@@ -378,7 +463,19 @@ def admin_panel():
         pending_html = '<p style="color:var(--text2)">No pending matches.</p>'
     player_rows = ''
     for p in players:
-        player_rows += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><strong>{p["name"]}</strong> - MMR: <span class="mmr">{p["mmr"]}</span> | W:{p["wins"]} L:{p["losses"]}</div><div><form method="post" action="/admin/set_mmr" style="display:flex;gap:8px;align-items:center"><input type="hidden" name="player_id" value="{p["id"]}"><input name="mmr" type="number" value="{p["mmr"]}" style="width:100px"><button type="submit" class="btn">Set</button><a href="/admin/reset/{p["id"]}" class="btn btn-red">Reset</a></form></div></div>'
+        esc_name = p['name'].replace("'", "\\'")
+        player_rows += f'''<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+            <div><strong>{p["name"]}</strong> - MMR: <span class="mmr">{p["mmr"]}</span> | W:{p["wins"]} L:{p["losses"]}</div>
+            <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+                <form method="post" action="/admin/set_mmr" style="display:flex;gap:4px;align-items:center;margin:0">
+                    <input type="hidden" name="player_id" value="{p["id"]}">
+                    <input name="mmr" type="number" value="{p["mmr"]}" style="width:80px;margin:0">
+                    <button type="submit" class="btn btn-sm">Set</button>
+                </form>
+                <button class="btn btn-sm btn-outline" onclick="renamePlayer({p['id']}, '{esc_name}')">Rename</button>
+                <a href="/admin/reset/{p["id"]}" class="btn btn-sm btn-red">Reset</a>
+                <button class="btn btn-sm btn-red" onclick="deletePlayer({p['id']}, '{esc_name}')">Delete</button>
+            </div></div>'''
     content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
     return page('Admin Panel', content, 'admin')
 
