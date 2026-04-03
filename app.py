@@ -244,7 +244,7 @@ function adminDeletePlayer(id, name) {
 '''
 
 def page(title, content, nav_active=''):
-    nav_items = [('/', 'Leaderboard', 'leaderboard'), ('/add_player', 'Add Player', 'add'),
+    nav_items = [('/', 'Leaderboard', 'leaderboard'),
         ('/submit_match', 'Submit Match', 'match'), ('/balance', 'Team Balancer', 'balance'),
         ('/history', 'Match History', 'history'), ('/admin', 'Admin', 'admin')]
     nav_html = ''
@@ -345,6 +345,7 @@ def api_delete_player(name):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/add_player', methods=['GET','POST'])
+@admin_required
 def add_player():
     msg = ''
     if request.method == 'POST':
@@ -484,7 +485,7 @@ def admin_panel():
                 <a href="/admin/reset/{p["id"]}" class="btn btn-sm btn-red">Reset</a>
                 <button class="btn btn-sm btn-red" onclick="adminDeletePlayer({p['id']}, '{esc_name}')">Delete</button>
             </div></div>'''
-    content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
+    content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a> <a href="/add_player" class="btn" style="font-size:0.85em;margin-left:8px">+ Add Player</a></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
     return page('Admin Panel', content, 'admin')
 
 @app.route('/admin/approve/<int:match_id>')
