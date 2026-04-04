@@ -218,7 +218,36 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
 .badge-denied { background:rgba(225,112,85,0.2); color:var(--red); }
 .win { color:var(--green); } .loss { color:var(--red); }
 .actions { display:flex; gap:4px; }
-@media(max-width:600px) { .container { padding:16px 8px; } .card { padding:16px; } th,td { padding:8px 6px; font-size:0.9em; } }'''
+.match-card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:0; margin-bottom:16px; overflow:hidden; transition:transform .15s, box-shadow .15s; }
+.match-card:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,0.3); }
+.match-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; border-bottom:1px solid var(--border); background:var(--surface2); }
+.match-header .match-id { font-weight:700; color:var(--text2); font-size:0.9em; }
+.match-header .match-date { color:var(--text2); font-size:0.82em; }
+.match-body { display:flex; align-items:stretch; padding:20px; gap:0; }
+.match-team { flex:1; padding:12px 16px; border-radius:10px; }
+.match-team.winner { background:rgba(0,184,148,0.08); border:1px solid rgba(0,184,148,0.25); }
+.match-team.loser { background:rgba(225,112,85,0.05); border:1px solid rgba(225,112,85,0.12); }
+.match-team .team-label { font-size:0.75em; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px; font-weight:600; }
+.match-team.winner .team-label { color:var(--green); }
+.match-team.loser .team-label { color:var(--red); opacity:0.7; }
+.match-team .team-winner-tag { display:inline-block; background:var(--green); color:#fff; font-size:0.7em; padding:2px 8px; border-radius:4px; margin-left:6px; font-weight:700; letter-spacing:0.5px; vertical-align:middle; }
+.match-team .player-row { display:flex; justify-content:space-between; align-items:center; padding:5px 0; }
+.match-team .player-name { font-weight:500; font-size:0.95em; }
+.match-team.winner .player-name { color:var(--text); }
+.match-team.loser .player-name { color:var(--text2); }
+.match-team .player-mmr-change { font-weight:700; font-size:0.9em; }
+.match-team .player-mmr-change.up { color:var(--green); }
+.match-team .player-mmr-change.down { color:var(--red); }
+.match-vs { display:flex; align-items:center; justify-content:center; padding:0 16px; flex-shrink:0; }
+.match-vs span { font-size:1.3em; font-weight:800; color:var(--text2); opacity:0.4; letter-spacing:2px; }
+.match-empty { text-align:center; padding:60px 20px; color:var(--text2); }
+.match-empty .empty-icon { font-size:3em; margin-bottom:12px; opacity:0.3; }
+.match-empty p { font-size:1.05em; }
+@media(max-width:600px) { .container { padding:16px 8px; } .card { padding:16px; } th,td { padding:8px 6px; font-size:0.9em; }
+  .match-body { flex-direction:column; gap:12px; padding:16px; }
+  .match-vs { padding:4px 0; } .match-vs span { font-size:1em; }
+  .match-team { padding:10px 12px; }
+  .match-header { padding:10px 16px; } }'''
 
 RENAME_JS = '''
 function adminRenamePlayer(id, currentName) {
@@ -428,17 +457,53 @@ def balance():
 @app.route('/history')
 def history():
     matches = query('SELECT * FROM matches ORDER BY id DESC')
-    rows = ''
+    cards = ''
     for m in matches:
         t1 = json.loads(m['team1'])
         t2 = json.loads(m['team2'])
         changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
         badge_cls = {'pending':'badge-pending','approved':'badge-approved','denied':'badge-denied'}.get(m['status'],'')
-        winner_label = 'Team 1' if m['winner'] == 'team1' else 'Team 2'
-        change_str = ', '.join(f'{k}: {v}' for k,v in changes.items())
-        rows += f'<tr><td>{m["id"]}</td><td>{", ".join(t1)}</td><td>{", ".join(t2)}</td><td><strong>{winner_label}</strong></td><td style="font-size:0.85em">{change_str}</td><td><span class="badge {badge_cls}">{m["status"]}</span></td></tr>'
-    empty = '<p style="color:var(--text2);padding:20px;text-align:center">No matches yet.</p>' if not matches else ''
-    content = f'<h1>Match History</h1><div class="card"><table><tr><th>#</th><th>Team 1</th><th>Team 2</th><th>Winner</th><th>MMR Changes</th><th>Status</th></tr>{rows}</table>{empty}</div>'
+        is_t1_winner = m['winner'] == 'team1'
+        # Format date
+        date_str = ''
+        if m.get('created_at'):
+            try:
+                dt = m['created_at']
+                if isinstance(dt, str):
+                    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S.%f'):
+                        try:
+                            dt = datetime.strptime(dt, fmt)
+                            break
+                        except:
+                            continue
+                if isinstance(dt, datetime):
+                    date_str = dt.strftime('%b %d, %Y at %I:%M %p')
+            except:
+                date_str = str(m['created_at'])[:16]
+        # Build player rows for each team
+        def build_players(names, is_winner):
+            html = ''
+            for name in names:
+                chg = changes.get(name, '')
+                arrow = '&#9650; ' if chg.startswith('+') else '&#9660; ' if chg.startswith('-') else ''
+                css = 'up' if chg.startswith('+') else 'down' if chg.startswith('-') else ''
+                html += f'<div class="player-row"><span class="player-name">{name}</span><span class="player-mmr-change {css}">{arrow}{chg}</span></div>'
+            return html
+        w_class = 'winner' if is_t1_winner else 'loser'
+        l_class = 'loser' if is_t1_winner else 'winner'
+        w_tag = '<span class="team-winner-tag">WINNER</span>' 
+        t1_label = f'Team 1 {w_tag if is_t1_winner else ""}'
+        t2_label = f'Team 2 {w_tag if not is_t1_winner else ""}'
+        cards += f'''<div class="match-card">
+<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{m["status"]}</span></div><div class="match-date">{date_str}</div></div>
+<div class="match-body">
+<div class="match-team {w_class}"><div class="team-label">{t1_label}</div>{build_players(t1, is_t1_winner)}</div>
+<div class="match-vs"><span>VS</span></div>
+<div class="match-team {l_class}"><div class="team-label">{t2_label}</div>{build_players(t2, not is_t1_winner)}</div>
+</div></div>'''
+    if not matches:
+        cards = '<div class="match-empty"><div class="empty-icon">&#9876;</div><p>No matches recorded yet.</p></div>'
+    content = f'<h1>Match History</h1>{cards}'
     return page('Match History', content, 'history')
 
 # ---------- ADMIN ----------
