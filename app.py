@@ -177,6 +177,7 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
+
 CSS = ''':root { --bg: #0f1117; --surface: #1a1d27; --surface2: #242837; --border: #2d3148; --text: #e4e6f0;
   --text2: #9ea2b8; --accent: #6c5ce7; --accent2: #a29bfe; --green: #00b894; --red: #e17055; --gold: #fdcb6e; }
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -243,11 +244,17 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
 .match-empty { text-align:center; padding:60px 20px; color:var(--text2); }
 .match-empty .empty-icon { font-size:3em; margin-bottom:12px; opacity:0.3; }
 .match-empty p { font-size:1.05em; }
+.match-admin-actions { display:flex; gap:8px; padding:12px 20px; border-top:1px solid var(--border); background:var(--surface2); justify-content:flex-end; align-items:center; }
+.match-admin-actions .admin-label { font-size:0.75em; text-transform:uppercase; letter-spacing:1px; color:var(--text2); margin-right:auto; font-weight:600; }
+.btn-edit { background:var(--accent); } .btn-edit:hover { background:var(--accent2); }
+.btn-delete { background:var(--red); } .btn-delete:hover { background:#e08060; }
 @media(max-width:600px) { .container { padding:16px 8px; } .card { padding:16px; } th,td { padding:8px 6px; font-size:0.9em; }
   .match-body { flex-direction:column; gap:12px; padding:16px; }
   .match-vs { padding:4px 0; } .match-vs span { font-size:1em; }
   .match-team { padding:10px 12px; }
-  .match-header { padding:10px 16px; } }'''
+  .match-header { padding:10px 16px; }
+  .match-admin-actions { padding:10px 16px; flex-wrap:wrap; } }'''
+
 
 RENAME_JS = '''
 function adminRenamePlayer(id, currentName) {
@@ -289,6 +296,7 @@ def page(title, content, nav_active=''):
 
 def flash_html(msg, type='success'):
     return f'<div class="flash flash-{type}">{msg}</div>'
+
 
 # ---------- ROUTES ----------
 @app.route('/')
@@ -435,6 +443,7 @@ def submit_match():
     content = f'<h1>Submit Match Result</h1>{msg}<div class="card"><form method="post"><label>Team 1</label><div class="checkbox-grid">{checks1}</div><label>Team 2</label><div class="checkbox-grid">{checks2}</div><label>Winner</label><select name="winner"><option value="team1">Team 1</option><option value="team2">Team 2</option></select><button type="submit">Submit Match</button></form></div>'
     return page('Submit Match', content, 'match')
 
+
 @app.route('/balance', methods=['GET','POST'])
 def balance():
     players = query('SELECT * FROM players ORDER BY name')
@@ -457,6 +466,8 @@ def balance():
 @app.route('/history')
 def history():
     matches = query('SELECT * FROM matches ORDER BY id DESC')
+    is_admin = session.get('is_admin', False)
+    most_recent_id = matches[0]['id'] if matches else None
     cards = ''
     for m in matches:
         t1 = json.loads(m['team1'])
@@ -491,20 +502,28 @@ def history():
             return html
         w_class = 'winner' if is_t1_winner else 'loser'
         l_class = 'loser' if is_t1_winner else 'winner'
-        w_tag = '<span class="team-winner-tag">WINNER</span>' 
+        w_tag = '<span class="team-winner-tag">WINNER</span>'
         t1_label = f'Team 1 {w_tag if is_t1_winner else ""}'
         t2_label = f'Team 2 {w_tag if not is_t1_winner else ""}'
-        cards += f'''<div class="match-card">
-<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{m["status"]}</span></div><div class="match-date">{date_str}</div></div>
-<div class="match-body">
-<div class="match-team {w_class}"><div class="team-label">{t1_label}</div>{build_players(t1, is_t1_winner)}</div>
-<div class="match-vs"><span>VS</span></div>
-<div class="match-team {l_class}"><div class="team-label">{t2_label}</div>{build_players(t2, not is_t1_winner)}</div>
-</div></div>'''
+        # Admin buttons for most recent approved match only
+        admin_btns = ''
+        if is_admin and m['id'] == most_recent_id and m['status'] == 'approved':
+            admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
+            admin_btns += '<a href="/admin/edit_last_match" class="btn btn-sm btn-edit">Edit Match</a>'
+            admin_btns += '<button class="btn btn-sm btn-delete" onclick="if(confirm(\'Are you sure you want to delete this match?\\nMMR changes will be reversed. This cannot be undone.\')){window.location=\'/admin/delete_last_match\'}">Delete Match</button>'
+            admin_btns += '</div>'
+        cards += f'<div class="match-card">'
+        cards += f'<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{m["status"]}</span></div><div class="match-date">{date_str}</div></div>'
+        cards += f'<div class="match-body">'
+        cards += f'<div class="match-team {w_class}"><div class="team-label">{t1_label}</div>{build_players(t1, is_t1_winner)}</div>'
+        cards += f'<div class="match-vs"><span>VS</span></div>'
+        cards += f'<div class="match-team {l_class}"><div class="team-label">{t2_label}</div>{build_players(t2, not is_t1_winner)}</div>'
+        cards += f'</div>{admin_btns}</div>'
     if not matches:
         cards = '<div class="match-empty"><div class="empty-icon">&#9876;</div><p>No matches recorded yet.</p></div>'
     content = f'<h1>Match History</h1>{cards}'
     return page('Match History', content, 'history')
+
 
 # ---------- ADMIN ----------
 @app.route('/admin', methods=['GET','POST'])
@@ -538,18 +557,17 @@ def admin_panel():
     player_rows = ''
     for p in players:
         esc_name = p['name'].replace("'", "\\'")
-        player_rows += f'''<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-            <div><strong>{p["name"]}</strong> - MMR: <span class="mmr">{p["mmr"]}</span> | W:{p["wins"]} L:{p["losses"]}</div>
-            <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
-                <form method="post" action="/admin/set_mmr" style="display:flex;gap:4px;align-items:center;margin:0">
-                    <input type="hidden" name="player_id" value="{p["id"]}">
-                    <input name="mmr" type="number" value="{p["mmr"]}" style="width:80px;margin:0">
-                    <button type="submit" class="btn btn-sm">Set</button>
-                </form>
-                <button class="btn btn-sm btn-outline" onclick="adminRenamePlayer({p['id']}, '{esc_name}')">Rename</button>
-                <a href="/admin/reset/{p["id"]}" class="btn btn-sm btn-red">Reset</a>
-                <button class="btn btn-sm btn-red" onclick="adminDeletePlayer({p['id']}, '{esc_name}')">Delete</button>
-            </div></div>'''
+        player_rows += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
+        player_rows += f'<div><strong>{p["name"]}</strong> - MMR: <span class="mmr">{p["mmr"]}</span> | W:{p["wins"]} L:{p["losses"]}</div>'
+        player_rows += f'<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">'
+        player_rows += f'<form method="post" action="/admin/set_mmr" style="display:flex;gap:4px;align-items:center;margin:0">'
+        player_rows += f'<input type="hidden" name="player_id" value="{p["id"]}">'
+        player_rows += f'<input name="mmr" type="number" value="{p["mmr"]}" style="width:80px;margin:0">'
+        player_rows += f'<button type="submit" class="btn btn-sm">Set</button></form>'
+        player_rows += f'<button class="btn btn-sm btn-outline" onclick="adminRenamePlayer({p["id"]}, \'{esc_name}\')">Rename</button>'
+        player_rows += f'<a href="/admin/reset/{p["id"]}" class="btn btn-sm btn-red">Reset</a>'
+        player_rows += f'<button class="btn btn-sm btn-red" onclick="adminDeletePlayer({p["id"]}, \'{esc_name}\')">Delete</button>'
+        player_rows += f'</div></div>'
     content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a> <a href="/add_player" class="btn" style="font-size:0.85em;margin-left:8px">+ Add Player</a></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
     return page('Admin Panel', content, 'admin')
 
@@ -577,6 +595,102 @@ def approve_match(match_id):
 def deny_match(match_id):
     query('UPDATE matches SET status=? WHERE id=?', ('denied', match_id), commit=True)
     return redirect(url_for('admin_panel'))
+
+@app.route('/admin/delete_last_match')
+@admin_required
+def delete_last_match():
+    m = query("SELECT * FROM matches WHERE status='approved' ORDER BY id DESC LIMIT 1", one=True)
+    if not m:
+        return redirect(url_for('history'))
+    changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
+    t1_names = json.loads(m['team1'])
+    t2_names = json.loads(m['team2'])
+    w_names = t1_names if m['winner'] == 'team1' else t2_names
+    l_names = t2_names if m['winner'] == 'team1' else t1_names
+    # Reverse MMR: subtract from winners, add to losers; reverse win/loss counts
+    for name in w_names:
+        delta = int(changes.get(name, '+0').replace('+',''))
+        query('UPDATE players SET mmr=mmr-?, wins=CASE WHEN wins>0 THEN wins-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
+    for name in l_names:
+        delta = abs(int(changes.get(name, '-0').replace('-','')))
+        query('UPDATE players SET mmr=mmr+?, losses=CASE WHEN losses>0 THEN losses-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
+    query('DELETE FROM matches WHERE id=?', (m['id'],), commit=True)
+    logger.info(f'Deleted match #{m["id"]} and reversed MMR changes')
+    return redirect(url_for('history'))
+
+@app.route('/admin/edit_last_match', methods=['GET','POST'])
+@admin_required
+def edit_last_match():
+    m = query("SELECT * FROM matches WHERE status='approved' ORDER BY id DESC LIMIT 1", one=True)
+    if not m:
+        return redirect(url_for('history'))
+    players = query('SELECT * FROM players ORDER BY name')
+    msg = ''
+    if request.method == 'POST':
+        t1_ids = request.form.getlist('team1')
+        t2_ids = request.form.getlist('team2')
+        new_winner = request.form.get('winner')
+        if not t1_ids or not t2_ids:
+            msg = flash_html('Both teams need at least one player.', 'error')
+        elif set(t1_ids) & set(t2_ids):
+            msg = flash_html('A player cannot be on both teams.', 'error')
+        elif new_winner not in ('team1','team2'):
+            msg = flash_html('Select a winner.', 'error')
+        else:
+            # Step 1: Reverse old MMR using stored deltas
+            old_changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
+            old_t1 = json.loads(m['team1'])
+            old_t2 = json.loads(m['team2'])
+            old_w = old_t1 if m['winner'] == 'team1' else old_t2
+            old_l = old_t2 if m['winner'] == 'team1' else old_t1
+            for name in old_w:
+                delta = int(old_changes.get(name, '+0').replace('+',''))
+                query('UPDATE players SET mmr=mmr-?, wins=CASE WHEN wins>0 THEN wins-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
+            for name in old_l:
+                delta = abs(int(old_changes.get(name, '-0').replace('-','')))
+                query('UPDATE players SET mmr=mmr+?, losses=CASE WHEN losses>0 THEN losses-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
+            # Step 2: Recalculate with new teams/winner
+            t1_names = [p['name'] for p in players if str(p['id']) in t1_ids]
+            t2_names = [p['name'] for p in players if str(p['id']) in t2_ids]
+            # Re-fetch players after reversal for accurate current MMR
+            fresh_players = query('SELECT * FROM players ORDER BY name')
+            t1_p = [p for p in fresh_players if str(p['id']) in t1_ids]
+            t2_p = [p for p in fresh_players if str(p['id']) in t2_ids]
+            w_team = t1_p if new_winner == 'team1' else t2_p
+            l_team = t2_p if new_winner == 'team1' else t1_p
+            avg_w = team_avg_mmr(w_team)
+            avg_l = team_avg_mmr(l_team)
+            delta = elo_update(avg_w, avg_l)
+            new_changes = {}
+            for p in w_team:
+                new_changes[p['name']] = f'+{delta}'
+            for p in l_team:
+                new_changes[p['name']] = f'-{delta}'
+            # Apply new MMR
+            for p in w_team:
+                query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
+            for p in l_team:
+                query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
+            query('UPDATE matches SET team1=?, team2=?, winner=?, mmr_changes=? WHERE id=?',
+                  (json.dumps(t1_names), json.dumps(t2_names), new_winner, json.dumps(new_changes), m['id']), commit=True)
+            logger.info(f'Edited match #{m["id"]}: new teams and winner applied')
+            return redirect(url_for('history'))
+    # GET: render edit form pre-filled with current match data
+    old_t1 = json.loads(m['team1'])
+    old_t2 = json.loads(m['team2'])
+    old_winner = m['winner']
+    checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}"{" checked" if p["name"] in old_t1 else ""}>{p["name"]} ({p["mmr"]})</label>' for p in players)
+    checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}"{" checked" if p["name"] in old_t2 else ""}>{p["name"]} ({p["mmr"]})</label>' for p in players)
+    sel1 = ' selected' if old_winner == 'team1' else ''
+    sel2 = ' selected' if old_winner == 'team2' else ''
+    content = f'<h1>Edit Match #{m["id"]}</h1>{msg}'
+    content += f'<div class="card"><form method="post">'
+    content += f'<label>Team 1</label><div class="checkbox-grid">{checks1}</div>'
+    content += f'<label>Team 2</label><div class="checkbox-grid">{checks2}</div>'
+    content += f'<label>Winner</label><select name="winner"><option value="team1"{sel1}>Team 1</option><option value="team2"{sel2}>Team 2</option></select>'
+    content += f'<div style="display:flex;gap:8px;margin-top:8px"><button type="submit" class="btn">Save Changes</button><a href="/history" class="btn btn-outline">Cancel</a></div>'
+    content += f'</form></div>'
+    return page('Edit Match', content, 'history')
 
 @app.route('/admin/set_mmr', methods=['POST'])
 @admin_required
