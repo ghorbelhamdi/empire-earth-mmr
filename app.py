@@ -194,6 +194,7 @@ th { color:var(--text2); font-size:0.85em; text-transform:uppercase; letter-spac
 tr:hover { background:var(--surface2); }
 .mmr { font-weight:700; color:var(--accent2); font-size:1.1em; }
 .rank { color:var(--gold); font-weight:700; }
+.na-text { color:var(--text2); opacity:0.5; font-style:italic; }
 input,select { background:var(--surface2); border:1px solid var(--border); color:var(--text); padding:10px 14px; border-radius:8px; font-size:1em; width:100%; margin-bottom:12px; }
 input:focus,select:focus { outline:none; border-color:var(--accent); }
 button,.btn { background:var(--accent); color:white; border:none; padding:10px 20px; border-radius:8px; font-size:1em; cursor:pointer; transition:background .2s; display:inline-block; text-decoration:none; }
@@ -255,7 +256,6 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
   .match-header { padding:10px 16px; }
   .match-admin-actions { padding:10px 16px; flex-wrap:wrap; } }'''
 
-
 RENAME_JS = '''
 function adminRenamePlayer(id, currentName) {
     var newName = prompt("Rename player '" + currentName + "' to:", currentName);
@@ -301,14 +301,23 @@ def flash_html(msg, type='success'):
 # ---------- ROUTES ----------
 @app.route('/')
 def leaderboard():
-    players = query('SELECT * FROM players ORDER BY mmr DESC')
+    all_players = query('SELECT * FROM players ORDER BY mmr DESC')
+    # Separate active (played at least 1 game) from inactive (0 games)
+    active = [p for p in all_players if p['wins'] + p['losses'] > 0]
+    inactive = [p for p in all_players if p['wins'] + p['losses'] == 0]
+    # Sort active by MMR desc, inactive by name
+    active.sort(key=lambda p: p['mmr'], reverse=True)
+    inactive.sort(key=lambda p: p['name'].lower())
     rows = ''
-    for i, p in enumerate(players, 1):
+    for i, p in enumerate(active, 1):
         medal = ['&#129351;','&#129352;','&#129353;'][i-1] if i <= 3 else str(i)
         total = p['wins'] + p['losses']
-        wr = f"{p['wins']/total*100:.0f}%" if total > 0 else '-'
+        wr = f"{p['wins']/total*100:.0f}%"
         rows += f'<tr><td class="rank">{medal}</td><td><strong>{p["name"]}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td></tr>'
-    empty = '<p style="color:var(--text2);padding:20px;text-align:center">No players yet. Add some!</p>' if not players else ''
+    # Inactive players listed below with N/A for all stats
+    for p in inactive:
+        rows += f'<tr style="opacity:0.5"><td class="rank">-</td><td><strong>{p["name"]}</strong></td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td></tr>'
+    empty = '<p style="color:var(--text2);padding:20px;text-align:center">No players yet. Add some!</p>' if not all_players else ''
     content = f'<h1>Leaderboard</h1><div class="card"><table><tr><th>#</th><th>Player</th><th>MMR</th><th>W</th><th>L</th><th>WR</th></tr>{rows}</table>{empty}</div>'
     return page('Leaderboard', content, 'leaderboard')
 
@@ -607,7 +616,6 @@ def delete_last_match():
     t2_names = json.loads(m['team2'])
     w_names = t1_names if m['winner'] == 'team1' else t2_names
     l_names = t2_names if m['winner'] == 'team1' else t1_names
-    # Reverse MMR: subtract from winners, add to losers; reverse win/loss counts
     for name in w_names:
         delta = int(changes.get(name, '+0').replace('+',''))
         query('UPDATE players SET mmr=mmr-?, wins=CASE WHEN wins>0 THEN wins-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
@@ -637,7 +645,6 @@ def edit_last_match():
         elif new_winner not in ('team1','team2'):
             msg = flash_html('Select a winner.', 'error')
         else:
-            # Step 1: Reverse old MMR using stored deltas
             old_changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
             old_t1 = json.loads(m['team1'])
             old_t2 = json.loads(m['team2'])
@@ -649,10 +656,8 @@ def edit_last_match():
             for name in old_l:
                 delta = abs(int(old_changes.get(name, '-0').replace('-','')))
                 query('UPDATE players SET mmr=mmr+?, losses=CASE WHEN losses>0 THEN losses-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
-            # Step 2: Recalculate with new teams/winner
             t1_names = [p['name'] for p in players if str(p['id']) in t1_ids]
             t2_names = [p['name'] for p in players if str(p['id']) in t2_ids]
-            # Re-fetch players after reversal for accurate current MMR
             fresh_players = query('SELECT * FROM players ORDER BY name')
             t1_p = [p for p in fresh_players if str(p['id']) in t1_ids]
             t2_p = [p for p in fresh_players if str(p['id']) in t2_ids]
@@ -666,7 +671,6 @@ def edit_last_match():
                 new_changes[p['name']] = f'+{delta}'
             for p in l_team:
                 new_changes[p['name']] = f'-{delta}'
-            # Apply new MMR
             for p in w_team:
                 query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
             for p in l_team:
@@ -675,7 +679,6 @@ def edit_last_match():
                   (json.dumps(t1_names), json.dumps(t2_names), new_winner, json.dumps(new_changes), m['id']), commit=True)
             logger.info(f'Edited match #{m["id"]}: new teams and winner applied')
             return redirect(url_for('history'))
-    # GET: render edit form pre-filled with current match data
     old_t1 = json.loads(m['team1'])
     old_t2 = json.loads(m['team2'])
     old_winner = m['winner']
