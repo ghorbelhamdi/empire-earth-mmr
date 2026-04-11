@@ -141,6 +141,20 @@ def elo_update(winner_mmr, loser_mmr):
     e = expected(winner_mmr, loser_mmr)
     return round(K_FACTOR * (1 - e))
 
+def adjust_delta_for_team_size(delta, winner_count, loser_count):
+    """Adjust MMR delta based on team size imbalance.
+    Smaller team is the underdog: gains more for winning, loses less for losing.
+    Equal-size matches are unaffected (multiplier = 1.0)."""
+    if winner_count == loser_count or winner_count == 0 or loser_count == 0:
+        return delta
+    size_ratio = max(winner_count, loser_count) / min(winner_count, loser_count)
+    if winner_count <= loser_count:
+        # Underdog (smaller team) won - increase delta
+        return round(delta * size_ratio)
+    else:
+        # Favored (larger team) won - decrease delta
+        return round(delta / size_ratio)
+
 def team_avg_mmr(players_list):
     if not players_list:
         return 0
@@ -431,6 +445,7 @@ def submit_match():
             avg_w = team_avg_mmr(w_team)
             avg_l = team_avg_mmr(l_team)
             delta = elo_update(avg_w, avg_l)
+            delta = adjust_delta_for_team_size(delta, len(w_team), len(l_team))
             changes = {}
             for p in w_team:
                 changes[p['name']] = f'+{delta}'
@@ -666,6 +681,7 @@ def edit_last_match():
             avg_w = team_avg_mmr(w_team)
             avg_l = team_avg_mmr(l_team)
             delta = elo_update(avg_w, avg_l)
+            delta = adjust_delta_for_team_size(delta, len(w_team), len(l_team))
             new_changes = {}
             for p in w_team:
                 new_changes[p['name']] = f'+{delta}'
@@ -708,6 +724,47 @@ def set_mmr():
 @admin_required
 def reset_player(player_id):
     query('UPDATE players SET mmr=?, wins=0, losses=0 WHERE id=?', (DEFAULT_MMR, player_id), commit=True)
+    return redirect(url_for('admin_panel'))
+
+
+@app.route('/admin/recalculate_mmr')
+@admin_required
+def recalculate_mmr():
+    """Replay all approved matches in order with the current MMR formula,
+    including team-size adjustments. Resets all players first."""
+    # Reset all players to default
+    query('UPDATE players SET mmr=?, wins=0, losses=0', (DEFAULT_MMR,), commit=True)
+    # Get all approved matches in chronological order
+    matches = query("SELECT * FROM matches WHERE status='approved' ORDER BY id ASC")
+    for m in matches:
+        t1_names = json.loads(m['team1'])
+        t2_names = json.loads(m['team2'])
+        w_names = t1_names if m['winner'] == 'team1' else t2_names
+        l_names = t2_names if m['winner'] == 'team1' else t1_names
+        # Get current MMR for each player
+        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
+        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
+        w_players = [p for p in w_players if p]
+        l_players = [p for p in l_players if p]
+        if not w_players or not l_players:
+            continue
+        avg_w = team_avg_mmr(w_players)
+        avg_l = team_avg_mmr(l_players)
+        delta = elo_update(avg_w, avg_l)
+        delta = adjust_delta_for_team_size(delta, len(w_players), len(l_players))
+        # Update stored mmr_changes
+        changes = {}
+        for p in w_players:
+            changes[p['name']] = f'+{delta}'
+        for p in l_players:
+            changes[p['name']] = f'-{delta}'
+        query('UPDATE matches SET mmr_changes=? WHERE id=?', (json.dumps(changes), m['id']), commit=True)
+        # Apply to players
+        for p in w_players:
+            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
+        for p in l_players:
+            query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
+    logger.info(f'Recalculated MMR for {len(matches)} matches with team-size adjustments')
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/logout')
