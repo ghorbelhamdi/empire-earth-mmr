@@ -560,12 +560,15 @@ def history():
         w_tag = '<span class="team-winner-tag">WINNER</span>'
         t1_label = f'Team 1 {w_tag if is_t1_winner else ""}'
         t2_label = f'Team 2 {w_tag if not is_t1_winner else ""}'
-        # Admin buttons for most recent approved match only
+        # Admin buttons: edit/delete for most recent, delete for all others
         admin_btns = ''
-        if is_admin and m['id'] == most_recent_id and m['status'] == 'approved':
+        if is_admin and m['status'] == 'approved':
             admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
-            admin_btns += '<a href="/admin/edit_last_match" class="btn btn-sm btn-edit">Edit Match</a>'
-            admin_btns += '<button class="btn btn-sm btn-delete" onclick="if(confirm(\'Are you sure you want to delete this match?\\nMMR changes will be reversed. This cannot be undone.\')){window.location=\'/admin/delete_last_match\'}">Delete Match</button>'
+            if m['id'] == most_recent_id:
+                admin_btns += '<a href="/admin/edit_last_match" class="btn btn-sm btn-edit">Edit Match</a>'
+                admin_btns += '<button class="btn btn-sm btn-delete" onclick="if(confirm(\'Are you sure you want to delete this match?\\nMMR changes will be reversed. This cannot be undone.\')){window.location=\'/admin/delete_last_match\'}">Delete Match</button>'
+            else:
+                admin_btns += '<form method="post" action="/admin/delete_match/' + str(m["id"]) + '" style="margin:0"><button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete match #' + str(m["id"]) + '? All MMR will be recalculated from scratch. This cannot be undone.\')">Delete Match</button></form>'
             admin_btns += '</div>'
         cards += f'<div class="match-card">'
         cards += f'<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{m["status"]}</span></div><div class="match-date">{date_str}</div></div>'
@@ -670,6 +673,49 @@ def delete_last_match():
         query('UPDATE players SET mmr=mmr+?, losses=CASE WHEN losses>0 THEN losses-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
     query('DELETE FROM matches WHERE id=?', (m['id'],), commit=True)
     logger.info(f'Deleted match #{m["id"]} and reversed MMR changes')
+    return redirect(url_for('history'))
+
+
+@app.route('/admin/delete_match/<int:match_id>', methods=['POST'])
+@admin_required
+def delete_match(match_id):
+    """Delete any match by ID and recalculate all MMR from scratch."""
+    m = query('SELECT * FROM matches WHERE id=?', (match_id,), one=True)
+    if not m:
+        return redirect(url_for('history'))
+    # Delete the match
+    query('DELETE FROM matches WHERE id=?', (match_id,), commit=True)
+    logger.info(f'Deleted match #{match_id}, recalculating all MMR...')
+    # Reset all players to default
+    query('UPDATE players SET mmr=?, wins=0, losses=0', (DEFAULT_MMR,), commit=True)
+    # Replay all remaining approved matches in chronological order
+    matches = query("SELECT * FROM matches WHERE status='approved' ORDER BY id ASC")
+    for rm in matches:
+        t1_names = json.loads(rm['team1'])
+        t2_names = json.loads(rm['team2'])
+        w_names = t1_names if rm['winner'] == 'team1' else t2_names
+        l_names = t2_names if rm['winner'] == 'team1' else t1_names
+        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
+        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
+        w_players = [p for p in w_players if p]
+        l_players = [p for p in l_players if p]
+        if not w_players or not l_players:
+            continue
+        avg_w = team_avg_mmr(w_players)
+        avg_l = team_avg_mmr(l_players)
+        delta = elo_update(avg_w, avg_l)
+        delta = adjust_delta_for_team_size(delta, len(w_players), len(l_players))
+        changes = {}
+        for p in w_players:
+            changes[p['name']] = f'+{delta}'
+        for p in l_players:
+            changes[p['name']] = f'-{delta}'
+        query('UPDATE matches SET mmr_changes=? WHERE id=?', (json.dumps(changes), rm['id']), commit=True)
+        for p in w_players:
+            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
+        for p in l_players:
+            query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
+    logger.info(f'MMR recalculated after deleting match #{match_id}, replayed {len(matches)} matches')
     return redirect(url_for('history'))
 
 @app.route('/admin/edit_last_match', methods=['GET','POST'])
