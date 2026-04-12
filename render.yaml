@@ -10,8 +10,6 @@ services:
         value: 3.11.0
       - key: SECRET_KEY
         generateValue: true
-      - key: ADMIN_PASSWORD
-        value: empire2026
       - key: REQUIRE_MATCH_APPROVAL
         value: "true"
       - key: WEB_CONCURRENCY

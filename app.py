@@ -1,4 +1,4 @@
-import os, json, sqlite3, hashlib, secrets, math, time, logging
+import os, json, sqlite3, hashlib, secrets, math, time, logging, html
 from datetime import datetime
 from itertools import combinations
 from functools import wraps
@@ -11,12 +11,35 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'empire2026')
+ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD', '')
 REQUIRE_MATCH_APPROVAL = os.environ.get('REQUIRE_MATCH_APPROVAL', 'true').lower() == 'true'
 DEFAULT_MMR = 1000
 K_FACTOR = 32
+ADMIN_SESSION_TIMEOUT = 1800  # 30 minutes
 
 use_postgres = DATABASE_URL.startswith('postgres')
+
+# ---------- SECURITY HELPERS ----------
+def esc(s):
+    """Escape a string for safe HTML insertion."""
+    return html.escape(str(s))
+
+def csrf_token():
+    """Get or create a CSRF token for the current session."""
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(32)
+    return session['csrf_token']
+
+def csrf_field():
+    """Return a hidden input HTML string with the CSRF token."""
+    return f'<input type="hidden" name="csrf_token" value="{csrf_token()}">'
+
+def check_csrf():
+    """Validate the CSRF token from the submitted form."""
+    token = request.form.get('csrf_token', '')
+    expected_token = session.get('csrf_token', None)
+    return expected_token is not None and secrets.compare_digest(token, expected_token)
+
 
 def get_db():
     if 'db' not in g:
@@ -112,7 +135,7 @@ def health_check():
         count = players[0]['cnt'] if players else 0
         return jsonify({'status': 'ok', 'backend': backend, 'player_count': count}), 200
     except Exception as e:
-        return jsonify({'status': 'error', 'backend': backend, 'message': str(e)}), 500
+        return jsonify({'status': 'error', 'backend': backend, 'message': 'Internal server error'}), 500
 
 def rename_player_in_matches(old_name, new_name):
     matches = query('SELECT * FROM matches')
@@ -213,6 +236,10 @@ def admin_required(f):
     def decorated(*args, **kwargs):
         if not session.get('is_admin'):
             return redirect(url_for('admin_login'))
+        login_time = session.get('admin_login_time')
+        if login_time is None or time.time() - login_time > ADMIN_SESSION_TIMEOUT:
+            session.clear()
+            return redirect(url_for('admin_login'))
         return f(*args, **kwargs)
     return decorated
 
@@ -296,7 +323,7 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
   .match-admin-actions { padding:10px 16px; flex-wrap:wrap; } }'''
 
 RENAME_JS = '''
-function adminRenamePlayer(id, currentName) {
+function adminRenamePlayer(id, currentName, csrfToken) {
     var newName = prompt("Rename player '" + currentName + "' to:", currentName);
     if (newName && newName.trim() !== "" && newName.trim() !== currentName) {
         var f = document.createElement("form");
@@ -304,16 +331,18 @@ function adminRenamePlayer(id, currentName) {
         var i1 = document.createElement("input"); i1.type = "hidden"; i1.name = "player_id"; i1.value = id;
         var i2 = document.createElement("input"); i2.type = "hidden"; i2.name = "new_name"; i2.value = newName.trim();
         var i3 = document.createElement("input"); i3.type = "hidden"; i3.name = "redirect"; i3.value = "/admin/panel";
-        f.appendChild(i1); f.appendChild(i2); f.appendChild(i3); document.body.appendChild(f); f.submit();
+        var i4 = document.createElement("input"); i4.type = "hidden"; i4.name = "csrf_token"; i4.value = csrfToken;
+        f.appendChild(i1); f.appendChild(i2); f.appendChild(i3); f.appendChild(i4); document.body.appendChild(f); f.submit();
     }
 }
-function adminDeletePlayer(id, name) {
+function adminDeletePlayer(id, name, csrfToken) {
     if (confirm("Delete player '" + name + "'? This cannot be undone.")) {
         var f = document.createElement("form");
         f.method = "POST"; f.action = "/delete_player";
         var i1 = document.createElement("input"); i1.type = "hidden"; i1.name = "player_id"; i1.value = id;
         var i2 = document.createElement("input"); i2.type = "hidden"; i2.name = "redirect"; i2.value = "/admin/panel";
-        f.appendChild(i1); f.appendChild(i2); document.body.appendChild(f); f.submit();
+        var i3 = document.createElement("input"); i3.type = "hidden"; i3.name = "csrf_token"; i3.value = csrfToken;
+        f.appendChild(i1); f.appendChild(i2); f.appendChild(i3); document.body.appendChild(f); f.submit();
     }
 }
 '''
@@ -328,13 +357,13 @@ def page(title, content, nav_active=''):
         nav_html += f'<a href="{href}" class="nav-link{active}">{label}</a>'
     return f'''<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title} - Empire Earth MMR</title><style>{CSS}</style></head><body>
+<title>{esc(title)} - Empire Earth MMR</title><style>{CSS}</style></head><body>
 <script>{RENAME_JS}</script>
 <nav class="navbar"><span class="brand">Empire Earth MMR</span>{nav_html}</nav>
 <div class="container">{content}</div></body></html>'''
 
 def flash_html(msg, type='success'):
-    return f'<div class="flash flash-{type}">{msg}</div>'
+    return f'<div class="flash flash-{type}">{esc(msg)}</div>'
 
 
 # ---------- ROUTES ----------
@@ -352,10 +381,10 @@ def leaderboard():
         medal = ['&#129351;','&#129352;','&#129353;'][i-1] if i <= 3 else str(i)
         total = p['wins'] + p['losses']
         wr = f"{p['wins']/total*100:.0f}%"
-        rows += f'<tr><td class="rank">{medal}</td><td><strong>{p["name"]}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td></tr>'
+        rows += f'<tr><td class="rank">{medal}</td><td><strong>{esc(p["name"])}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td></tr>'
     # Inactive players listed below with N/A for all stats
     for p in inactive:
-        rows += f'<tr style="opacity:0.5"><td class="rank">-</td><td><strong>{p["name"]}</strong></td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td></tr>'
+        rows += f'<tr style="opacity:0.5"><td class="rank">-</td><td><strong>{esc(p["name"])}</strong></td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td></tr>'
     empty = '<p style="color:var(--text2);padding:20px;text-align:center">No players yet. Add some!</p>' if not all_players else ''
     content = f'<h1>Leaderboard</h1><div class="card"><table><tr><th>#</th><th>Player</th><th>MMR</th><th>W</th><th>L</th><th>WR</th></tr>{rows}</table>{empty}</div>'
     return page('Leaderboard', content, 'leaderboard')
@@ -363,6 +392,8 @@ def leaderboard():
 @app.route('/rename_player', methods=['POST'])
 @admin_required
 def rename_player_route():
+    if not check_csrf():
+        return redirect(url_for('admin_panel'))
     pid = request.form.get('player_id')
     new_name = request.form.get('new_name', '').strip()
     redirect_to = request.form.get('redirect', '/')
@@ -385,6 +416,8 @@ def rename_player_route():
 @app.route('/delete_player', methods=['POST'])
 @admin_required
 def delete_player_route():
+    if not check_csrf():
+        return redirect(url_for('admin_panel'))
     pid = request.form.get('player_id')
     redirect_to = request.form.get('redirect', '/')
     if not pid:
@@ -414,7 +447,8 @@ def api_rename_player():
         rename_player_in_matches(old_name, new_name)
         return jsonify({'success': True, 'old_name': old_name, 'new_name': new_name}), 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f'API error: {e}')
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/players/<name>', methods=['DELETE'])
 def api_delete_player(name):
@@ -427,23 +461,25 @@ def api_delete_player(name):
         query('DELETE FROM players WHERE name=?', (name,), commit=True)
         return jsonify({'success': True, 'deleted': name}), 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f'API error: {e}')
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/add_player', methods=['GET','POST'])
 @admin_required
 def add_player():
     msg = ''
     if request.method == 'POST':
-        name = request.form.get('name','').strip()
-        if not name:
+        if not check_csrf():
+            msg = flash_html('Invalid request.', 'error')
+        elif not (name := request.form.get('name','').strip()):
             msg = flash_html('Please enter a name.', 'error')
         else:
             try:
                 query('INSERT INTO players (name, mmr) VALUES (?, ?)', (name, DEFAULT_MMR), commit=True)
-                msg = flash_html(f'Player <strong>{name}</strong> added with {DEFAULT_MMR} MMR!')
+                msg = flash_html(f'Player {name} added with {DEFAULT_MMR} MMR!')
             except:
                 msg = flash_html(f'Player already exists.', 'error')
-    content = f'<h1>Add Player</h1>{msg}<div class="card"><form method="post"><label>Player Name</label><input name="name" placeholder="Enter player name" required><button type="submit">Add Player</button></form></div>'
+    content = f'<h1>Add Player</h1>{msg}<div class="card"><form method="post">{csrf_field()}<label>Player Name</label><input name="name" placeholder="Enter player name" required><button type="submit">Add Player</button></form></div>'
     return page('Add Player', content, 'add')
 
 @app.route('/submit_match', methods=['GET','POST'])
@@ -451,6 +487,9 @@ def submit_match():
     msg = ''
     players = query('SELECT * FROM players ORDER BY name')
     if request.method == 'POST':
+      if not check_csrf():
+            msg = flash_html('Invalid request.', 'error')
+      else:
         t1 = request.form.getlist('team1')
         t2 = request.form.getlist('team2')
         winner = request.form.get('winner')
@@ -487,9 +526,9 @@ def submit_match():
                 msg = flash_html(f'Match recorded! MMR change: +/-{delta}')
             else:
                 msg = flash_html(f'Match submitted for admin approval. Estimated MMR change: +/-{delta}')
-    checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}">{p["name"]} ({p["mmr"]})</label>' for p in players)
-    checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}">{p["name"]} ({p["mmr"]})</label>' for p in players)
-    content = f'<h1>Submit Match Result</h1>{msg}<div class="card"><form method="post"><label>Team 1</label><div class="checkbox-grid">{checks1}</div><label>Team 2</label><div class="checkbox-grid">{checks2}</div><label>Winner</label><select name="winner"><option value="team1">Team 1</option><option value="team2">Team 2</option></select><button type="submit">Submit Match</button></form></div>'
+    checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
+    checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
+    content = f'<h1>Submit Match Result</h1>{msg}<div class="card"><form method="post">{csrf_field()}<label>Team 1</label><div class="checkbox-grid">{checks1}</div><label>Team 2</label><div class="checkbox-grid">{checks2}</div><label>Winner</label><select name="winner"><option value="team1">Team 1</option><option value="team2">Team 2</option></select><button type="submit">Submit Match</button></form></div>'
     return page('Submit Match', content, 'match')
 
 
@@ -498,14 +537,17 @@ def balance():
     players = query('SELECT * FROM players ORDER BY name')
     result = ''
     if request.method == 'POST':
+      if not check_csrf():
+            result = flash_html('Invalid request.', 'error')
+      else:
         sel = request.form.getlist('players')
         if len(sel) < 2:
             result = flash_html('Select at least 2 players.', 'error')
         else:
             t1, t2, diff, handicapped = balance_teams([int(x) for x in sel])
             if t1 and t2:
-                t1_html = ''.join(f'<div>{p["name"]} <span class="mmr">({p["mmr"]})</span></div>' for p in t1)
-                t2_html = ''.join(f'<div>{p["name"]} <span class="mmr">({p["mmr"]})</span></div>' for p in t2)
+                t1_html = ''.join(f'<div>{esc(p["name"])} <span class="mmr">({p["mmr"]})</span></div>' for p in t1)
+                t2_html = ''.join(f'<div>{esc(p["name"])} <span class="mmr">({p["mmr"]})</span></div>' for p in t2)
                 avg1, avg2 = team_avg_mmr(t1), team_avg_mmr(t2)
                 if handicapped:
                     title = f'Balanced Teams (handicap applied: {len(t1)}v{len(t2)})'
@@ -514,8 +556,8 @@ def balance():
                     title = f'Balanced Teams (MMR diff: {diff:.0f})'
                     handicap_note = ''
                 result = f'<div class="card"><h3 style="margin-bottom:12px">{title}</h3><div class="teams-row"><div class="team-card"><h3 style="color:var(--accent2)">Team 1 ({len(t1)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg1:.0f}</span></h3>{t1_html}</div><div class="vs">VS</div><div class="team-card"><h3 style="color:var(--gold)">Team 2 ({len(t2)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg2:.0f}</span></h3>{t2_html}</div></div>{handicap_note}</div>'
-    checks = ''.join(f'<label><input type="checkbox" name="players" value="{p["id"]}">{p["name"]} ({p["mmr"]})</label>' for p in players)
-    content = f'<h1>Team Balancer</h1><div class="card"><form method="post"><label>Select Players</label><div class="checkbox-grid">{checks}</div><button type="submit">Balance Teams</button></form></div>{result}'
+    checks = ''.join(f'<label><input type="checkbox" name="players" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
+    content = f'<h1>Team Balancer</h1><div class="card"><form method="post">{csrf_field()}<label>Select Players</label><div class="checkbox-grid">{checks}</div><button type="submit">Balance Teams</button></form></div>{result}'
     return page('Team Balancer', content, 'balance')
 
 @app.route('/history')
@@ -553,7 +595,7 @@ def history():
                 chg = changes.get(name, '')
                 arrow = '&#9650; ' if chg.startswith('+') else '&#9660; ' if chg.startswith('-') else ''
                 css = 'up' if chg.startswith('+') else 'down' if chg.startswith('-') else ''
-                html += f'<div class="player-row"><span class="player-name">{name}</span><span class="player-mmr-change {css}">{arrow}{chg}</span></div>'
+                html += f'<div class="player-row"><span class="player-name">{esc(name)}</span><span class="player-mmr-change {css}">{arrow}{esc(chg)}</span></div>'
             return html
         w_class = 'winner' if is_t1_winner else 'loser'
         l_class = 'loser' if is_t1_winner else 'winner'
@@ -566,12 +608,12 @@ def history():
             admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
             if m['id'] == most_recent_id:
                 admin_btns += '<a href="/admin/edit_last_match" class="btn btn-sm btn-edit">Edit Match</a>'
-                admin_btns += '<button class="btn btn-sm btn-delete" onclick="if(confirm(\'Are you sure you want to delete this match?\\nMMR changes will be reversed. This cannot be undone.\')){window.location=\'/admin/delete_last_match\'}">Delete Match</button>'
+                admin_btns += f'<form method="post" action="/admin/delete_last_match" style="display:inline;margin:0">{csrf_field()}<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete this match? MMR will be reversed.\')">Delete Match</button></form>'
             else:
-                admin_btns += '<form method="post" action="/admin/delete_match/' + str(m["id"]) + '" style="margin:0"><button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete match #' + str(m["id"]) + '? All MMR will be recalculated from scratch. This cannot be undone.\')">Delete Match</button></form>'
+                admin_btns += '<form method="post" action="/admin/delete_match/' + str(m["id"]) + '" style="margin:0">' + csrf_field() + '<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete match #' + str(m["id"]) + '? All MMR will be recalculated from scratch. This cannot be undone.\')">Delete Match</button></form>'
             admin_btns += '</div>'
         cards += f'<div class="match-card">'
-        cards += f'<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{m["status"]}</span></div><div class="match-date">{date_str}</div></div>'
+        cards += f'<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{esc(m["status"])}</span></div><div class="match-date">{date_str}</div></div>'
         cards += f'<div class="match-body">'
         cards += f'<div class="match-team {w_class}"><div class="team-label">{t1_label}</div>{build_players(t1, is_t1_winner)}</div>'
         cards += f'<div class="match-vs"><span>VS</span></div>'
@@ -590,11 +632,14 @@ def admin_login():
         return redirect(url_for('admin_panel'))
     msg = ''
     if request.method == 'POST':
-        if request.form.get('password') == ADMIN_PASSWORD:
+        if not check_csrf():
+            msg = flash_html('Invalid request.', 'error')
+        elif hashlib.sha256(request.form.get('password', '').encode()).hexdigest() == ADMIN_PASSWORD_HASH:
             session['is_admin'] = True
+            session['admin_login_time'] = time.time()
             return redirect(url_for('admin_panel'))
-        msg = flash_html('Wrong password.', 'error')
-    content = f'<h1>Admin Login</h1>{msg}<div class="card"><form method="post"><label>Admin Password</label><input type="password" name="password" placeholder="Enter password" required><button type="submit">Login</button></form></div>'
+            msg = flash_html('Wrong password.', 'error')
+    content = f'<h1>Admin Login</h1>{msg}<div class="card"><form method="post">{csrf_field()}<label>Admin Password</label><input type="password" name="password" placeholder="Enter password" required><button type="submit">Login</button></form></div>'
     return page('Admin', content, 'admin')
 
 @app.route('/admin/panel')
@@ -608,30 +653,32 @@ def admin_panel():
         t2 = json.loads(m['team2'])
         changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
         winner_label = 'Team 1' if m['winner'] == 'team1' else 'Team 2'
-        change_str = ', '.join(f'{k}: {v}' for k,v in changes.items())
-        pending_html += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><strong>Match #{m["id"]}</strong><br>{", ".join(t1)} vs {", ".join(t2)}<br>Winner: {winner_label} | Changes: {change_str}</div><div><a href="/admin/approve/{m["id"]}" class="btn btn-green" style="margin-right:8px">Approve</a><a href="/admin/deny/{m["id"]}" class="btn btn-red">Deny</a></div></div>'
+        change_str = ', '.join(f'{esc(k)}: {esc(v)}' for k,v in changes.items())
+        pending_html += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><strong>Match #{m["id"]}</strong><br>{esc(", ".join(t1))} vs {esc(", ".join(t2))}<br>Winner: {winner_label} | Changes: {change_str}</div><div><form method="post" action="/admin/approve/{m["id"]}" style="display:inline;margin:0;margin-right:8px">{csrf_field()}<button type="submit" class="btn btn-green">Approve</button></form><form method="post" action="/admin/deny/{m["id"]}" style="display:inline;margin:0">{csrf_field()}<button type="submit" class="btn btn-red">Deny</button></form></div></div>'
     if not pending:
         pending_html = '<p style="color:var(--text2)">No pending matches.</p>'
     player_rows = ''
     for p in players:
         esc_name = p['name'].replace("'", "\\'")
         player_rows += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
-        player_rows += f'<div><strong>{p["name"]}</strong> - MMR: <span class="mmr">{p["mmr"]}</span> | W:{p["wins"]} L:{p["losses"]}</div>'
+        player_rows += f'<div><strong>{esc(p["name"])}</strong> - MMR: <span class="mmr">{p["mmr"]}</span> | W:{p["wins"]} L:{p["losses"]}</div>'
         player_rows += f'<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">'
-        player_rows += f'<form method="post" action="/admin/set_mmr" style="display:flex;gap:4px;align-items:center;margin:0">'
+        player_rows += f'<form method="post" action="/admin/set_mmr" style="display:flex;gap:4px;align-items:center;margin:0">{csrf_field()}'
         player_rows += f'<input type="hidden" name="player_id" value="{p["id"]}">'
         player_rows += f'<input name="mmr" type="number" value="{p["mmr"]}" style="width:80px;margin:0">'
         player_rows += f'<button type="submit" class="btn btn-sm">Set</button></form>'
-        player_rows += f'<button class="btn btn-sm btn-outline" onclick="adminRenamePlayer({p["id"]}, \'{esc_name}\')">Rename</button>'
-        player_rows += f'<a href="/admin/reset/{p["id"]}" class="btn btn-sm btn-red">Reset</a>'
-        player_rows += f'<button class="btn btn-sm btn-red" onclick="adminDeletePlayer({p["id"]}, \'{esc_name}\')">Delete</button>'
+        player_rows += f'<button class="btn btn-sm btn-outline" onclick="adminRenamePlayer({p["id"]}, \'{esc_name}\', \'{csrf_token()}\')">Rename</button>'
+        player_rows += f'<form method="post" action="/admin/reset/{p["id"]}" style="display:inline;margin:0">{csrf_field()}<button type="submit" class="btn btn-sm btn-red">Reset</button></form>'
+        player_rows += f'<button class="btn btn-sm btn-red" onclick="adminDeletePlayer({p["id"]}, \'{esc_name}\', \'{csrf_token()}\')">Delete</button>'
         player_rows += f'</div></div>'
-    content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a> <a href="/add_player" class="btn" style="font-size:0.85em;margin-left:8px">+ Add Player</a></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
+    content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a> <a href="/add_player" class="btn" style="font-size:0.85em;margin-left:8px">+ Add Player</a> <form method="post" action="/admin/recalculate_mmr" style="display:inline;margin:0;margin-left:8px">{csrf_field()}<button type="submit" class="btn" style="font-size:0.85em" onclick="return confirm(\'Recalculate all MMR from scratch?\')">Recalculate MMR</button></form></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
     return page('Admin Panel', content, 'admin')
 
-@app.route('/admin/approve/<int:match_id>')
+@app.route('/admin/approve/<int:match_id>', methods=['POST'])
 @admin_required
 def approve_match(match_id):
+    if not check_csrf():
+        return redirect(url_for('admin_panel'))
     m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'pending'), one=True)
     if m:
         changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
@@ -648,15 +695,19 @@ def approve_match(match_id):
         query('UPDATE matches SET status=? WHERE id=?', ('approved', match_id), commit=True)
     return redirect(url_for('admin_panel'))
 
-@app.route('/admin/deny/<int:match_id>')
+@app.route('/admin/deny/<int:match_id>', methods=['POST'])
 @admin_required
 def deny_match(match_id):
+    if not check_csrf():
+        return redirect(url_for('admin_panel'))
     query('UPDATE matches SET status=? WHERE id=?', ('denied', match_id), commit=True)
     return redirect(url_for('admin_panel'))
 
-@app.route('/admin/delete_last_match')
+@app.route('/admin/delete_last_match', methods=['POST'])
 @admin_required
 def delete_last_match():
+    if not check_csrf():
+        return redirect(url_for('history'))
     m = query("SELECT * FROM matches WHERE status='approved' ORDER BY id DESC LIMIT 1", one=True)
     if not m:
         return redirect(url_for('history'))
@@ -680,6 +731,8 @@ def delete_last_match():
 @admin_required
 def delete_match(match_id):
     """Delete any match by ID and recalculate all MMR from scratch."""
+    if not check_csrf():
+        return redirect(url_for('history'))
     m = query('SELECT * FROM matches WHERE id=?', (match_id,), one=True)
     if not m:
         return redirect(url_for('history'))
@@ -727,6 +780,9 @@ def edit_last_match():
     players = query('SELECT * FROM players ORDER BY name')
     msg = ''
     if request.method == 'POST':
+      if not check_csrf():
+            msg = flash_html('Invalid request.', 'error')
+      else:
         t1_ids = request.form.getlist('team1')
         t2_ids = request.form.getlist('team2')
         new_winner = request.form.get('winner')
@@ -775,12 +831,12 @@ def edit_last_match():
     old_t1 = json.loads(m['team1'])
     old_t2 = json.loads(m['team2'])
     old_winner = m['winner']
-    checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}"{" checked" if p["name"] in old_t1 else ""}>{p["name"]} ({p["mmr"]})</label>' for p in players)
-    checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}"{" checked" if p["name"] in old_t2 else ""}>{p["name"]} ({p["mmr"]})</label>' for p in players)
+    checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}"{" checked" if p["name"] in old_t1 else ""}>{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
+    checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}"{" checked" if p["name"] in old_t2 else ""}>{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
     sel1 = ' selected' if old_winner == 'team1' else ''
     sel2 = ' selected' if old_winner == 'team2' else ''
     content = f'<h1>Edit Match #{m["id"]}</h1>{msg}'
-    content += f'<div class="card"><form method="post">'
+    content += f'<div class="card"><form method="post">{csrf_field()}'
     content += f'<label>Team 1</label><div class="checkbox-grid">{checks1}</div>'
     content += f'<label>Team 2</label><div class="checkbox-grid">{checks2}</div>'
     content += f'<label>Winner</label><select name="winner"><option value="team1"{sel1}>Team 1</option><option value="team2"{sel2}>Team 2</option></select>'
@@ -791,24 +847,30 @@ def edit_last_match():
 @app.route('/admin/set_mmr', methods=['POST'])
 @admin_required
 def set_mmr():
+    if not check_csrf():
+        return redirect(url_for('admin_panel'))
     pid = request.form.get('player_id')
     mmr = request.form.get('mmr')
     if pid and mmr:
         query('UPDATE players SET mmr=? WHERE id=?', (int(mmr), int(pid)), commit=True)
     return redirect(url_for('admin_panel'))
 
-@app.route('/admin/reset/<int:player_id>')
+@app.route('/admin/reset/<int:player_id>', methods=['POST'])
 @admin_required
 def reset_player(player_id):
+    if not check_csrf():
+        return redirect(url_for('admin_panel'))
     query('UPDATE players SET mmr=?, wins=0, losses=0 WHERE id=?', (DEFAULT_MMR, player_id), commit=True)
     return redirect(url_for('admin_panel'))
 
 
-@app.route('/admin/recalculate_mmr')
+@app.route('/admin/recalculate_mmr', methods=['POST'])
 @admin_required
 def recalculate_mmr():
     """Replay all approved matches in order with the current MMR formula,
     including team-size adjustments. Resets all players first."""
+    if not check_csrf():
+        return redirect(url_for('admin_panel'))
     # Reset all players to default
     query('UPDATE players SET mmr=?, wins=0, losses=0', (DEFAULT_MMR,), commit=True)
     # Get all approved matches in chronological order
@@ -846,7 +908,7 @@ def recalculate_mmr():
 
 @app.route('/admin/logout')
 def admin_logout():
-    session.pop('is_admin', None)
+    session.clear()
     return redirect(url_for('admin_login'))
 
 if __name__ == '__main__':
