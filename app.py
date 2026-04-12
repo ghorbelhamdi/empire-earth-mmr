@@ -160,6 +160,8 @@ def team_avg_mmr(players_list):
         return 0
     return sum(p['mmr'] for p in players_list) / len(players_list)
 
+HANDICAP_FACTOR = 0.5  # Tunable: controls how much extra avg MMR the smaller team gets
+
 def balance_teams(player_ids):
     players = []
     for pid in player_ids:
@@ -168,20 +170,43 @@ def balance_teams(player_ids):
             players.append(p)
     n = len(players)
     if n < 2:
-        return None, None, None
-    best_diff = float('inf')
+        return None, None, None, False
+    best_score = float('inf')
     best_t1 = best_t2 = None
     half = n // 2
     sizes = [half] if n % 2 == 0 else [half, half + 1]
+    unequal = (n % 2 != 0)
+    # Calculate handicap target for unequal teams
+    if unequal:
+        all_mmr_avg = sum(p['mmr'] for p in players) / n
+        size_ratio = (half + 1) / half  # larger / smaller
+        target_handicap = all_mmr_avg * (size_ratio - 1) * HANDICAP_FACTOR
+    else:
+        target_handicap = 0
     for sz in sizes:
         for combo in combinations(range(n), sz):
             t1 = [players[i] for i in combo]
             t2 = [players[i] for i in range(n) if i not in combo]
-            diff = abs(team_avg_mmr(t1) - team_avg_mmr(t2))
-            if diff < best_diff:
-                best_diff = diff
+            avg1 = team_avg_mmr(t1)
+            avg2 = team_avg_mmr(t2)
+            if unequal:
+                # Identify which team is smaller
+                if len(t1) <= len(t2):
+                    small_avg, large_avg = avg1, avg2
+                else:
+                    small_avg, large_avg = avg2, avg1
+                # Smaller team should have higher avg; minimize distance to target
+                actual_diff = small_avg - large_avg
+                score = abs(actual_diff - target_handicap)
+            else:
+                score = abs(avg1 - avg2)
+            if score < best_score:
+                best_score = score
                 best_t1, best_t2 = t1, t2
-    return best_t1, best_t2, best_diff
+    # For unequal teams, ensure t1 is the smaller team (for display clarity)
+    if unequal and best_t1 and best_t2 and len(best_t1) > len(best_t2):
+        best_t1, best_t2 = best_t2, best_t1
+    return best_t1, best_t2, best_score, unequal
 
 def admin_required(f):
     @wraps(f)
@@ -477,12 +502,18 @@ def balance():
         if len(sel) < 2:
             result = flash_html('Select at least 2 players.', 'error')
         else:
-            t1, t2, diff = balance_teams([int(x) for x in sel])
+            t1, t2, diff, handicapped = balance_teams([int(x) for x in sel])
             if t1 and t2:
                 t1_html = ''.join(f'<div>{p["name"]} <span class="mmr">({p["mmr"]})</span></div>' for p in t1)
                 t2_html = ''.join(f'<div>{p["name"]} <span class="mmr">({p["mmr"]})</span></div>' for p in t2)
                 avg1, avg2 = team_avg_mmr(t1), team_avg_mmr(t2)
-                result = f'<div class="card"><h3 style="margin-bottom:12px">Balanced Teams (MMR diff: {diff:.0f})</h3><div class="teams-row"><div class="team-card"><h3 style="color:var(--accent2)">Team 1 <span style="font-size:0.8em;color:var(--text2)">avg {avg1:.0f}</span></h3>{t1_html}</div><div class="vs">VS</div><div class="team-card"><h3 style="color:var(--gold)">Team 2 <span style="font-size:0.8em;color:var(--text2)">avg {avg2:.0f}</span></h3>{t2_html}</div></div></div>'
+                if handicapped:
+                    title = f'Balanced Teams (handicap applied: {len(t1)}v{len(t2)})'
+                    handicap_note = f'<p style="color:var(--text2);font-size:0.85em;margin-top:10px">The {len(t1)}-player team is given a higher average MMR to compensate for the numbers disadvantage.</p>'
+                else:
+                    title = f'Balanced Teams (MMR diff: {diff:.0f})'
+                    handicap_note = ''
+                result = f'<div class="card"><h3 style="margin-bottom:12px">{title}</h3><div class="teams-row"><div class="team-card"><h3 style="color:var(--accent2)">Team 1 ({len(t1)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg1:.0f}</span></h3>{t1_html}</div><div class="vs">VS</div><div class="team-card"><h3 style="color:var(--gold)">Team 2 ({len(t2)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg2:.0f}</span></h3>{t2_html}</div></div>{handicap_note}</div>'
     checks = ''.join(f'<label><input type="checkbox" name="players" value="{p["id"]}">{p["name"]} ({p["mmr"]})</label>' for p in players)
     content = f'<h1>Team Balancer</h1><div class="card"><form method="post"><label>Select Players</label><div class="checkbox-grid">{checks}</div><button type="submit">Balance Teams</button></form></div>{result}'
     return page('Team Balancer', content, 'balance')
