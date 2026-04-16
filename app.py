@@ -732,7 +732,7 @@ def history():
         w_tag = '<span class="team-winner-tag">WINNER</span>'
         t1_label = f'Team 1 {w_tag if is_t1_winner else ""}'
         t2_label = f'Team 2 {w_tag if not is_t1_winner else ""}'
-        # Admin buttons: edit/delete for most recent, delete for all others
+        # Admin buttons: edit/delete for most recent, delete for all others, delete for denied
         admin_btns = ''
         if is_admin and m['status'] == 'approved':
             admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
@@ -741,6 +741,10 @@ def history():
                 admin_btns += f'<form method="post" action="/admin/delete_last_match" style="display:inline;margin:0">{csrf_field()}<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete this match? MMR will be reversed.\')">Delete Match</button></form>'
             else:
                 admin_btns += '<form method="post" action="/admin/delete_match/' + str(m["id"]) + '" style="margin:0">' + csrf_field() + '<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete match #' + str(m["id"]) + '? All MMR will be recalculated from scratch. This cannot be undone.\')">Delete Match</button></form>'
+            admin_btns += '</div>'
+        elif is_admin and m['status'] == 'denied':
+            admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
+            admin_btns += '<form method="post" action="/admin/delete_match/' + str(m["id"]) + '" style="margin:0">' + csrf_field() + '<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete denied match #' + str(m["id"]) + '?\')">Delete Match</button></form>'
             admin_btns += '</div>'
         cards += f'<div class="match-card">'
         cards += f'<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{esc(m["status"])}</span></div><div class="match-date">{date_str}</div></div>'
@@ -852,17 +856,20 @@ def delete_last_match():
 @app.route('/admin/delete_match/<int:match_id>', methods=['POST'])
 @admin_required
 def delete_match(match_id):
-    """Delete any match by ID and recalculate all MMR from scratch."""
+    """Delete any match by ID. Recalculate all MMR from scratch if the match was approved."""
     if not check_csrf():
         return redirect(url_for('history'))
     m = query('SELECT * FROM matches WHERE id=?', (match_id,), one=True)
     if not m:
         return redirect(url_for('history'))
-    # Delete the match
+    was_approved = m['status'] == 'approved'
     query('DELETE FROM matches WHERE id=?', (match_id,), commit=True)
-    logger.info(f'Deleted match #{match_id}, recalculating all MMR...')
-    replayed = recalc_all_openskill()
-    logger.info(f'MMR recalculated after deleting match #{match_id}, replayed {replayed} matches')
+    if was_approved:
+        logger.info(f'Deleted match #{match_id}, recalculating all MMR...')
+        replayed = recalc_all_openskill()
+        logger.info(f'MMR recalculated after deleting match #{match_id}, replayed {replayed} matches')
+    else:
+        logger.info(f'Deleted {m["status"]} match #{match_id} (no MMR recalc needed)')
     return redirect(url_for('history'))
 
 @app.route('/admin/edit_last_match', methods=['GET','POST'])
