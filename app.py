@@ -414,6 +414,17 @@ label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
 .match-team .player-mmr-change { font-weight:700; font-size:0.9em; }
 .match-team .player-mmr-change.up { color:var(--green); }
 .match-team .player-mmr-change.down { color:var(--red); }
+.preview-grid { display:flex; gap:16px; flex-wrap:wrap; }
+.preview-card { flex:1; min-width:220px; background:var(--surface2); border-radius:8px; padding:14px 16px; border:1px solid var(--border); }
+.preview-card .preview-title { font-size:0.85em; text-transform:uppercase; letter-spacing:1px; color:var(--accent2); margin-bottom:10px; font-weight:700; }
+.preview-section { margin-bottom:10px; }
+.preview-section:last-child { margin-bottom:0; }
+.preview-team-label { font-size:0.72em; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; font-weight:600; }
+.preview-row { display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:0.92em; }
+.preview-name { color:var(--text); }
+.preview-change { font-weight:700; font-size:0.9em; }
+.preview-change.up { color:var(--green); }
+.preview-change.down { color:var(--red); }
 .match-vs { display:flex; align-items:center; justify-content:center; padding:0 16px; flex-shrink:0; }
 .match-vs span { font-size:1.3em; font-weight:800; color:var(--text2); opacity:0.4; letter-spacing:2px; }
 .match-empty { text-align:center; padding:60px 20px; color:var(--text2); }
@@ -656,7 +667,25 @@ def balance():
                 else:
                     title = f'Balanced Teams (MMR diff: {diff:.0f})'
                     handicap_note = ''
-                result = f'<div class="card"><h3 style="margin-bottom:12px">{title}</h3><div class="teams-row"><div class="team-card"><h3 style="color:var(--accent2)">Team 1 ({len(t1)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg1:.0f}</span></h3>{t1_html}</div><div class="vs">VS</div><div class="team-card"><h3 style="color:var(--gold)">Team 2 ({len(t2)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg2:.0f}</span></h3>{t2_html}</div></div>{handicap_note}</div>'
+                deltas_t1_wins = preview_openskill_deltas(t1, t2)
+                deltas_t2_wins = preview_openskill_deltas(t2, t1)
+                def _preview_row(p, deltas):
+                    chg = deltas.get(p['name'], '')
+                    arrow = '&#9650; ' if chg.startswith('+') else '&#9660; ' if chg.startswith('-') else ''
+                    css = 'up' if chg.startswith('+') else 'down' if chg.startswith('-') else ''
+                    return f'<div class="preview-row"><span class="preview-name">{esc(p["name"])}</span><span class="preview-change {css}">{arrow}{esc(chg)}</span></div>'
+                def _preview_card(label, deltas):
+                    rows1 = ''.join(_preview_row(p, deltas) for p in t1)
+                    rows2 = ''.join(_preview_row(p, deltas) for p in t2)
+                    return (f'<div class="preview-card"><div class="preview-title">{label}</div>'
+                            f'<div class="preview-section"><div class="preview-team-label">Team 1</div>{rows1}</div>'
+                            f'<div class="preview-section"><div class="preview-team-label">Team 2</div>{rows2}</div></div>')
+                preview_html = ('<div class="card"><h3 style="margin-bottom:12px">Score Preview</h3>'
+                                '<div class="preview-grid">'
+                                + _preview_card('If Team 1 wins', deltas_t1_wins)
+                                + _preview_card('If Team 2 wins', deltas_t2_wins)
+                                + '</div></div>')
+                result = f'<div class="card"><h3 style="margin-bottom:12px">{title}</h3><div class="teams-row"><div class="team-card"><h3 style="color:var(--accent2)">Team 1 ({len(t1)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg1:.0f}</span></h3>{t1_html}</div><div class="vs">VS</div><div class="team-card"><h3 style="color:var(--gold)">Team 2 ({len(t2)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg2:.0f}</span></h3>{t2_html}</div></div>{handicap_note}</div>{preview_html}'
     checks = ''.join(f'<label><input type="checkbox" name="players" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
     content = f'<h1>Team Balancer</h1><div class="card"><form method="post">{csrf_field()}<label>Select Players</label><div class="checkbox-grid">{checks}</div><button type="submit">Balance Teams</button></form></div>{result}'
     return page('Team Balancer', content, 'balance')
