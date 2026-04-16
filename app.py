@@ -742,6 +742,10 @@ def history():
             else:
                 admin_btns += '<form method="post" action="/admin/delete_match/' + str(m["id"]) + '" style="margin:0">' + csrf_field() + '<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete match #' + str(m["id"]) + '? All MMR will be recalculated from scratch. This cannot be undone.\')">Delete Match</button></form>'
             admin_btns += '</div>'
+        elif is_admin and m['status'] == 'denied':
+            admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
+            admin_btns += '<form method="post" action="/admin/delete_denied_match/' + str(m["id"]) + '" style="margin:0">' + csrf_field() + '<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete denied match #' + str(m["id"]) + '?\')">Delete Match</button></form>'
+            admin_btns += '</div>'
         cards += f'<div class="match-card">'
         cards += f'<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{esc(m["status"])}</span></div><div class="match-date">{date_str}</div></div>'
         cards += f'<div class="match-body">'
@@ -863,6 +867,19 @@ def delete_match(match_id):
     logger.info(f'Deleted match #{match_id}, recalculating all MMR...')
     replayed = recalc_all_openskill()
     logger.info(f'MMR recalculated after deleting match #{match_id}, replayed {replayed} matches')
+    return redirect(url_for('history'))
+
+@app.route('/admin/delete_denied_match/<int:match_id>', methods=['POST'])
+@admin_required
+def delete_denied_match(match_id):
+    """Delete a denied match. No MMR recalculation needed since denied matches don't affect ratings."""
+    if not check_csrf():
+        return redirect(url_for('history'))
+    m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'denied'), one=True)
+    if not m:
+        return redirect(url_for('history'))
+    query('DELETE FROM matches WHERE id=?', (match_id,), commit=True)
+    logger.info(f'Deleted denied match #{match_id}')
     return redirect(url_for('history'))
 
 @app.route('/admin/edit_last_match', methods=['GET','POST'])
