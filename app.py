@@ -3,6 +3,7 @@ from datetime import datetime
 from itertools import combinations
 from functools import wraps
 from flask import Flask, request, redirect, url_for, session, jsonify, g
+from openskill.models import PlackettLuce
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,8 +15,21 @@ DATABASE_URL = os.environ.get('DATABASE_URL', '')
 ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD', '')
 REQUIRE_MATCH_APPROVAL = os.environ.get('REQUIRE_MATCH_APPROVAL', 'true').lower() == 'true'
 DEFAULT_MMR = 1000
-K_FACTOR = 32
+K_FACTOR = 32  # legacy, unused
 ADMIN_SESSION_TIMEOUT = 1800  # 30 minutes
+
+# --- OpenSkill (Plackett-Luce / Weng-Lin) rating model ---
+OS_MODEL = PlackettLuce()
+OS_DEFAULT_MU = 25.0
+OS_DEFAULT_SIGMA = 25.0 / 3.0
+RATING_SCALE = 40.0
+RATING_OFFSET = 1000.0
+
+def ordinal_to_mmr(mu, sigma):
+    """Map an OpenSkill rating (mu, sigma) to a displayable integer MMR.
+    Uses (mu - 3*sigma) * SCALE + OFFSET so a fresh player (mu=25, sigma=25/3)
+    lands on 1000 and a strong/confident rating grows from there."""
+    return round((mu - 3.0 * sigma) * RATING_SCALE + RATING_OFFSET)
 
 use_postgres = DATABASE_URL.startswith('postgres')
 
@@ -83,6 +97,28 @@ def query(sql, args=(), one=False, commit=False):
         results = [dict(r) for r in rows]
         return results[0] if one and results else results if not one else None
 
+
+def _migrate_openskill_columns():
+    """Idempotent: ensure mu/sigma columns exist on players table."""
+    try:
+        db = get_db()
+        cur = db.cursor()
+        if use_postgres:
+            cur.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS mu REAL DEFAULT 25.0")
+            cur.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS sigma REAL DEFAULT 8.333333333333334")
+        else:
+            cur.execute("PRAGMA table_info(players)")
+            cols = {row[1] if not isinstance(row, dict) else row['name'] for row in cur.fetchall()}
+            if 'mu' not in cols:
+                cur.execute("ALTER TABLE players ADD COLUMN mu REAL DEFAULT 25.0")
+            if 'sigma' not in cols:
+                cur.execute("ALTER TABLE players ADD COLUMN sigma REAL DEFAULT 8.333333333333334")
+            db.commit()
+        cur.close()
+    except Exception as e:
+        logger.warning(f'OpenSkill column migration skipped: {e}')
+
+
 def init_db():
     max_retries = 3
     for attempt in range(max_retries):
@@ -92,7 +128,9 @@ def init_db():
                 cur = db.cursor()
                 cur.execute('''CREATE TABLE IF NOT EXISTS players (
                     id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, mmr INTEGER DEFAULT 1000,
-                    wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                    wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,
+                    mu REAL DEFAULT 25.0, sigma REAL DEFAULT 8.333333333333334,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
                 cur.execute('''CREATE TABLE IF NOT EXISTS matches (
                     id SERIAL PRIMARY KEY, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
                     winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
@@ -102,13 +140,16 @@ def init_db():
                 cur = db.cursor()
                 cur.execute('''CREATE TABLE IF NOT EXISTS players (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, mmr INTEGER DEFAULT 1000,
-                    wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                    wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,
+                    mu REAL DEFAULT 25.0, sigma REAL DEFAULT 8.333333333333334,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
                 cur.execute('''CREATE TABLE IF NOT EXISTS matches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, team1 TEXT NOT NULL, team2 TEXT NOT NULL,
                     winner TEXT NOT NULL, mmr_changes TEXT, status TEXT DEFAULT 'pending',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
                 db.commit()
                 cur.close()
+            _migrate_openskill_columns()
             logger.info('Database initialized successfully.')
             return
         except Exception as e:
@@ -158,25 +199,92 @@ def rename_player_in_matches(old_name, new_name):
                   (json.dumps(t1), json.dumps(t2), json.dumps(changes), m['id']), commit=True)
 
 def expected(ra, rb):
+    """Legacy Elo helper (retained only for backward compatibility - not used by OpenSkill path)."""
     return 1.0 / (1 + 10 ** ((rb - ra) / 400.0))
 
-def elo_update(winner_mmr, loser_mmr):
-    e = expected(winner_mmr, loser_mmr)
-    return round(K_FACTOR * (1 - e))
 
-def adjust_delta_for_team_size(delta, winner_count, loser_count):
-    """Adjust MMR delta based on team size imbalance.
-    Smaller team is the underdog: gains more for winning, loses less for losing.
-    Equal-size matches are unaffected (multiplier = 1.0)."""
-    if winner_count == loser_count or winner_count == 0 or loser_count == 0:
-        return delta
-    size_ratio = max(winner_count, loser_count) / min(winner_count, loser_count)
-    if winner_count <= loser_count:
-        # Underdog (smaller team) won - increase delta
-        return round(delta * size_ratio)
-    else:
-        # Favored (larger team) won - decrease delta
-        return round(delta / size_ratio)
+def _player_rating(p):
+    """Build an OpenSkill Rating object from a player row, using defaults if mu/sigma are null."""
+    mu_val = p['mu'] if ('mu' in p and p['mu'] is not None) else OS_DEFAULT_MU
+    sigma_val = p['sigma'] if ('sigma' in p and p['sigma'] is not None) else OS_DEFAULT_SIGMA
+    return OS_MODEL.rating(mu=float(mu_val), sigma=float(sigma_val), name=p['name'])
+
+
+def _os_rate_teams(w_players, l_players):
+    """Run the Plackett-Luce update. Returns (new_w_ratings, new_l_ratings)."""
+    w_ratings = [_player_rating(p) for p in w_players]
+    l_ratings = [_player_rating(p) for p in l_players]
+    # ranks=[0,1] means team 0 beats team 1
+    new_w, new_l = OS_MODEL.rate([w_ratings, l_ratings], ranks=[0, 1])
+    return new_w, new_l
+
+
+def _fmt_delta(n):
+    return f'+{n}' if n >= 0 else f'{n}'
+
+
+def preview_openskill_deltas(w_players, l_players):
+    """Compute expected per-player MMR deltas without touching the DB."""
+    new_w, new_l = _os_rate_teams(w_players, l_players)
+    changes = {}
+    for p, r in zip(w_players, new_w):
+        old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
+        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
+    for p, r in zip(l_players, new_l):
+        old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
+        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
+    return changes
+
+
+def apply_openskill_match(w_players, l_players, update_counts=True):
+    """Rate a match and persist mu/sigma/mmr (and optionally wins/losses). Returns changes dict."""
+    new_w, new_l = _os_rate_teams(w_players, l_players)
+    changes = {}
+    for p, r in zip(w_players, new_w):
+        old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
+        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
+        if update_counts:
+            query('UPDATE players SET mu=?, sigma=?, mmr=?, wins=wins+1 WHERE id=?',
+                  (r.mu, r.sigma, new_mmr, p['id']), commit=True)
+        else:
+            query('UPDATE players SET mu=?, sigma=?, mmr=? WHERE id=?',
+                  (r.mu, r.sigma, new_mmr, p['id']), commit=True)
+    for p, r in zip(l_players, new_l):
+        old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
+        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
+        if update_counts:
+            query('UPDATE players SET mu=?, sigma=?, mmr=?, losses=losses+1 WHERE id=?',
+                  (r.mu, r.sigma, new_mmr, p['id']), commit=True)
+        else:
+            query('UPDATE players SET mu=?, sigma=?, mmr=? WHERE id=?',
+                  (r.mu, r.sigma, new_mmr, p['id']), commit=True)
+    return changes
+
+
+def recalc_all_openskill():
+    """Reset every player to fresh rating and replay every approved match in chronological order."""
+    query('UPDATE players SET mu=?, sigma=?, mmr=?, wins=0, losses=0',
+          (OS_DEFAULT_MU, OS_DEFAULT_SIGMA, DEFAULT_MMR), commit=True)
+    matches = query("SELECT * FROM matches WHERE status='approved' ORDER BY id ASC")
+    for m in matches:
+        t1_names = json.loads(m['team1'])
+        t2_names = json.loads(m['team2'])
+        w_names = t1_names if m['winner'] == 'team1' else t2_names
+        l_names = t2_names if m['winner'] == 'team1' else t1_names
+        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
+        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
+        w_players = [p for p in w_players if p]
+        l_players = [p for p in l_players if p]
+        if not w_players or not l_players:
+            continue
+        changes = apply_openskill_match(w_players, l_players, update_counts=True)
+        query('UPDATE matches SET mmr_changes=? WHERE id=?',
+              (json.dumps(changes), m['id']), commit=True)
+    return len(matches)
 
 def team_avg_mmr(players_list):
     if not players_list:
@@ -506,26 +614,19 @@ def submit_match():
             t2_players = [p for p in players if str(p['id']) in t2]
             w_team = t1_players if winner == 'team1' else t2_players
             l_team = t2_players if winner == 'team1' else t1_players
-            avg_w = team_avg_mmr(w_team)
-            avg_l = team_avg_mmr(l_team)
-            delta = elo_update(avg_w, avg_l)
-            delta = adjust_delta_for_team_size(delta, len(w_team), len(l_team))
-            changes = {}
-            for p in w_team:
-                changes[p['name']] = f'+{delta}'
-            for p in l_team:
-                changes[p['name']] = f'-{delta}'
             status = 'pending' if REQUIRE_MATCH_APPROVAL else 'approved'
+            if status == 'approved':
+                changes = apply_openskill_match(w_team, l_team, update_counts=True)
+            else:
+                # Preview only; real update happens on approval so ratings stay fresh.
+                changes = preview_openskill_deltas(w_team, l_team)
             query('INSERT INTO matches (team1, team2, winner, mmr_changes, status) VALUES (?,?,?,?,?)',
                   (json.dumps(t1_names), json.dumps(t2_names), winner, json.dumps(changes), status), commit=True)
+            summary = ', '.join(f"{n} {d}" for n, d in changes.items())
             if status == 'approved':
-                for p in w_team:
-                    query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
-                for p in l_team:
-                    query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
-                msg = flash_html(f'Match recorded! MMR change: +/-{delta}')
+                msg = flash_html(f'Match recorded! MMR changes: {summary}')
             else:
-                msg = flash_html(f'Match submitted for admin approval. Estimated MMR change: +/-{delta}')
+                msg = flash_html(f'Match submitted for admin approval. Estimated changes: {summary}')
     checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
     checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
     content = f'<h1>Submit Match Result</h1>{msg}<div class="card"><form method="post">{csrf_field()}<label>Team 1</label><div class="checkbox-grid">{checks1}</div><label>Team 2</label><div class="checkbox-grid">{checks2}</div><label>Winner</label><select name="winner"><option value="team1">Team 1</option><option value="team2">Team 2</option></select><button type="submit">Submit Match</button></form></div>'
@@ -681,18 +782,19 @@ def approve_match(match_id):
         return redirect(url_for('admin_panel'))
     m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'pending'), one=True)
     if m:
-        changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
         t1_names = json.loads(m['team1'])
         t2_names = json.loads(m['team2'])
         w_names = t1_names if m['winner'] == 'team1' else t2_names
         l_names = t2_names if m['winner'] == 'team1' else t1_names
-        for name in w_names:
-            delta = int(changes.get(name, '+0').replace('+',''))
-            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE name=?', (delta, name), commit=True)
-        for name in l_names:
-            delta = abs(int(changes.get(name, '-0').replace('-','')))
-            query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE name=?', (delta, name), commit=True)
-        query('UPDATE matches SET status=? WHERE id=?', ('approved', match_id), commit=True)
+        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
+        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
+        w_players = [p for p in w_players if p]
+        l_players = [p for p in l_players if p]
+        if w_players and l_players:
+            # Recompute against CURRENT ratings (ignore stale preview).
+            changes = apply_openskill_match(w_players, l_players, update_counts=True)
+            query('UPDATE matches SET status=?, mmr_changes=? WHERE id=?',
+                  ('approved', json.dumps(changes), match_id), commit=True)
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/deny/<int:match_id>', methods=['POST'])
@@ -711,19 +813,10 @@ def delete_last_match():
     m = query("SELECT * FROM matches WHERE status='approved' ORDER BY id DESC LIMIT 1", one=True)
     if not m:
         return redirect(url_for('history'))
-    changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
-    t1_names = json.loads(m['team1'])
-    t2_names = json.loads(m['team2'])
-    w_names = t1_names if m['winner'] == 'team1' else t2_names
-    l_names = t2_names if m['winner'] == 'team1' else t1_names
-    for name in w_names:
-        delta = int(changes.get(name, '+0').replace('+',''))
-        query('UPDATE players SET mmr=mmr-?, wins=CASE WHEN wins>0 THEN wins-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
-    for name in l_names:
-        delta = abs(int(changes.get(name, '-0').replace('-','')))
-        query('UPDATE players SET mmr=mmr+?, losses=CASE WHEN losses>0 THEN losses-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
     query('DELETE FROM matches WHERE id=?', (m['id'],), commit=True)
-    logger.info(f'Deleted match #{m["id"]} and reversed MMR changes')
+    # OpenSkill updates aren't cleanly reversible, so replay from scratch.
+    replayed = recalc_all_openskill()
+    logger.info(f'Deleted last match #{m["id"]} and replayed {replayed} approved matches')
     return redirect(url_for('history'))
 
 
@@ -739,36 +832,8 @@ def delete_match(match_id):
     # Delete the match
     query('DELETE FROM matches WHERE id=?', (match_id,), commit=True)
     logger.info(f'Deleted match #{match_id}, recalculating all MMR...')
-    # Reset all players to default
-    query('UPDATE players SET mmr=?, wins=0, losses=0', (DEFAULT_MMR,), commit=True)
-    # Replay all remaining approved matches in chronological order
-    matches = query("SELECT * FROM matches WHERE status='approved' ORDER BY id ASC")
-    for rm in matches:
-        t1_names = json.loads(rm['team1'])
-        t2_names = json.loads(rm['team2'])
-        w_names = t1_names if rm['winner'] == 'team1' else t2_names
-        l_names = t2_names if rm['winner'] == 'team1' else t1_names
-        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
-        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
-        w_players = [p for p in w_players if p]
-        l_players = [p for p in l_players if p]
-        if not w_players or not l_players:
-            continue
-        avg_w = team_avg_mmr(w_players)
-        avg_l = team_avg_mmr(l_players)
-        delta = elo_update(avg_w, avg_l)
-        delta = adjust_delta_for_team_size(delta, len(w_players), len(l_players))
-        changes = {}
-        for p in w_players:
-            changes[p['name']] = f'+{delta}'
-        for p in l_players:
-            changes[p['name']] = f'-{delta}'
-        query('UPDATE matches SET mmr_changes=? WHERE id=?', (json.dumps(changes), rm['id']), commit=True)
-        for p in w_players:
-            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
-        for p in l_players:
-            query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
-    logger.info(f'MMR recalculated after deleting match #{match_id}, replayed {len(matches)} matches')
+    replayed = recalc_all_openskill()
+    logger.info(f'MMR recalculated after deleting match #{match_id}, replayed {replayed} matches')
     return redirect(url_for('history'))
 
 @app.route('/admin/edit_last_match', methods=['GET','POST'])
@@ -793,40 +858,13 @@ def edit_last_match():
         elif new_winner not in ('team1','team2'):
             msg = flash_html('Select a winner.', 'error')
         else:
-            old_changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
-            old_t1 = json.loads(m['team1'])
-            old_t2 = json.loads(m['team2'])
-            old_w = old_t1 if m['winner'] == 'team1' else old_t2
-            old_l = old_t2 if m['winner'] == 'team1' else old_t1
-            for name in old_w:
-                delta = int(old_changes.get(name, '+0').replace('+',''))
-                query('UPDATE players SET mmr=mmr-?, wins=CASE WHEN wins>0 THEN wins-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
-            for name in old_l:
-                delta = abs(int(old_changes.get(name, '-0').replace('-','')))
-                query('UPDATE players SET mmr=mmr+?, losses=CASE WHEN losses>0 THEN losses-1 ELSE 0 END WHERE name=?', (delta, name), commit=True)
             t1_names = [p['name'] for p in players if str(p['id']) in t1_ids]
             t2_names = [p['name'] for p in players if str(p['id']) in t2_ids]
-            fresh_players = query('SELECT * FROM players ORDER BY name')
-            t1_p = [p for p in fresh_players if str(p['id']) in t1_ids]
-            t2_p = [p for p in fresh_players if str(p['id']) in t2_ids]
-            w_team = t1_p if new_winner == 'team1' else t2_p
-            l_team = t2_p if new_winner == 'team1' else t1_p
-            avg_w = team_avg_mmr(w_team)
-            avg_l = team_avg_mmr(l_team)
-            delta = elo_update(avg_w, avg_l)
-            delta = adjust_delta_for_team_size(delta, len(w_team), len(l_team))
-            new_changes = {}
-            for p in w_team:
-                new_changes[p['name']] = f'+{delta}'
-            for p in l_team:
-                new_changes[p['name']] = f'-{delta}'
-            for p in w_team:
-                query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
-            for p in l_team:
-                query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
-            query('UPDATE matches SET team1=?, team2=?, winner=?, mmr_changes=? WHERE id=?',
-                  (json.dumps(t1_names), json.dumps(t2_names), new_winner, json.dumps(new_changes), m['id']), commit=True)
-            logger.info(f'Edited match #{m["id"]}: new teams and winner applied')
+            # Update match row first, then replay all approved matches with OpenSkill.
+            query('UPDATE matches SET team1=?, team2=?, winner=? WHERE id=?',
+                  (json.dumps(t1_names), json.dumps(t2_names), new_winner, m['id']), commit=True)
+            replayed = recalc_all_openskill()
+            logger.info(f'Edited match #{m["id"]} and replayed {replayed} approved matches')
             return redirect(url_for('history'))
     old_t1 = json.loads(m['team1'])
     old_t2 = json.loads(m['team2'])
@@ -871,39 +909,8 @@ def recalculate_mmr():
     including team-size adjustments. Resets all players first."""
     if not check_csrf():
         return redirect(url_for('admin_panel'))
-    # Reset all players to default
-    query('UPDATE players SET mmr=?, wins=0, losses=0', (DEFAULT_MMR,), commit=True)
-    # Get all approved matches in chronological order
-    matches = query("SELECT * FROM matches WHERE status='approved' ORDER BY id ASC")
-    for m in matches:
-        t1_names = json.loads(m['team1'])
-        t2_names = json.loads(m['team2'])
-        w_names = t1_names if m['winner'] == 'team1' else t2_names
-        l_names = t2_names if m['winner'] == 'team1' else t1_names
-        # Get current MMR for each player
-        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
-        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
-        w_players = [p for p in w_players if p]
-        l_players = [p for p in l_players if p]
-        if not w_players or not l_players:
-            continue
-        avg_w = team_avg_mmr(w_players)
-        avg_l = team_avg_mmr(l_players)
-        delta = elo_update(avg_w, avg_l)
-        delta = adjust_delta_for_team_size(delta, len(w_players), len(l_players))
-        # Update stored mmr_changes
-        changes = {}
-        for p in w_players:
-            changes[p['name']] = f'+{delta}'
-        for p in l_players:
-            changes[p['name']] = f'-{delta}'
-        query('UPDATE matches SET mmr_changes=? WHERE id=?', (json.dumps(changes), m['id']), commit=True)
-        # Apply to players
-        for p in w_players:
-            query('UPDATE players SET mmr=mmr+?, wins=wins+1 WHERE id=?', (delta, p['id']), commit=True)
-        for p in l_players:
-            query('UPDATE players SET mmr=mmr-?, losses=losses+1 WHERE id=?', (delta, p['id']), commit=True)
-    logger.info(f'Recalculated MMR for {len(matches)} matches with team-size adjustments')
+    replayed = recalc_all_openskill()
+    logger.info(f'Recalculated MMR (OpenSkill PlackettLuce) for {replayed} matches')
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/logout')
