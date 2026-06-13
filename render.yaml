@@ -14,4 +14,15 @@ services:
         value: "true"
       - key: WEB_CONCURRENCY
         value: "1"
+      # DATABASE_URL points the app at a PERSISTENT Postgres database so data
+      # survives restarts/redeploys. The free Render filesystem is ephemeral, so
+      # the bundled SQLite file (empire.db) is wiped on every restart — do NOT
+      # rely on it in production. Set this in the Render dashboard to a free
+      # Neon (or Supabase) connection string. See DEPLOY.md.
+      - key: DATABASE_URL
+        sync: false
+      # SHA-256 hash of your admin password. Generate with:
+      #   python -c "import hashlib; print(hashlib.sha256(b'YOUR_PASSWORD').hexdigest())"
+      - key: ADMIN_PASSWORD
+        sync: false
     plan: free

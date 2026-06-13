@@ -1,0 +1,13 @@
+# Local SQLite dev database artifacts (production uses persistent Postgres via DATABASE_URL)
+empire.db-wal
+empire.db-shm
+
+# Secrets / local env
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
