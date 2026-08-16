@@ -352,94 +352,7 @@ def admin_required(f):
     return decorated
 
 
-CSS = ''':root { --bg: #0f1117; --surface: #1a1d27; --surface2: #242837; --border: #2d3148; --text: #e4e6f0;
-  --text2: #9ea2b8; --accent: #6c5ce7; --accent2: #a29bfe; --green: #00b894; --red: #e17055; --gold: #fdcb6e; }
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height:100vh; }
-.navbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; display:flex; align-items:center; gap:8px; overflow-x:auto; }
-.navbar .brand { font-weight:700; font-size:1.2em; color:var(--accent2); margin-right:20px; padding:16px 0; white-space:nowrap; }
-.nav-link { color:var(--text2); text-decoration:none; padding:16px 12px; font-size:0.9em; white-space:nowrap; border-bottom:2px solid transparent; transition:all .2s; }
-.nav-link:hover { color:var(--text); } .nav-link.active { color:var(--accent2); border-bottom-color:var(--accent2); }
-.container { max-width:900px; margin:0 auto; padding:24px 16px; }
-h1 { font-size:1.5em; margin-bottom:20px; color:var(--text); }
-.card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:16px; }
-table { width:100%; border-collapse:collapse; } th,td { padding:10px 14px; text-align:left; border-bottom:1px solid var(--border); }
-th { color:var(--text2); font-size:0.85em; text-transform:uppercase; letter-spacing:0.5px; }
-tr:hover { background:var(--surface2); }
-.mmr { font-weight:700; color:var(--accent2); font-size:1.1em; }
-.rank { color:var(--gold); font-weight:700; }
-.na-text { color:var(--text2); opacity:0.5; font-style:italic; }
-input,select { background:var(--surface2); border:1px solid var(--border); color:var(--text); padding:10px 14px; border-radius:8px; font-size:1em; width:100%; margin-bottom:12px; }
-input:focus,select:focus { outline:none; border-color:var(--accent); }
-button,.btn { background:var(--accent); color:white; border:none; padding:10px 20px; border-radius:8px; font-size:1em; cursor:pointer; transition:background .2s; display:inline-block; text-decoration:none; }
-button:hover,.btn:hover { background:var(--accent2); }
-.btn-sm { padding:4px 10px; font-size:0.8em; border-radius:6px; }
-.btn-green { background:var(--green); } .btn-red { background:var(--red); }
-.btn-green:hover { background:#00d2a0; } .btn-red:hover { background:#e08060; }
-.btn-outline { background:transparent; border:1px solid var(--border); color:var(--text2); }
-.btn-outline:hover { border-color:var(--accent); color:var(--text); }
-label { display:block; color:var(--text2); font-size:0.9em; margin-bottom:4px; }
-.flash { padding:12px 16px; border-radius:8px; margin-bottom:16px; font-size:0.95em; }
-.flash-success { background:rgba(0,184,148,0.15); color:var(--green); border:1px solid rgba(0,184,148,0.3); }
-.flash-error { background:rgba(225,112,85,0.15); color:var(--red); border:1px solid rgba(225,112,85,0.3); }
-.team-card { background:var(--surface2); border-radius:8px; padding:16px; flex:1; min-width:200px; }
-.team-card h3 { margin-bottom:10px; } .teams-row { display:flex; gap:16px; flex-wrap:wrap; }
-.vs { display:flex; align-items:center; font-size:1.5em; font-weight:700; color:var(--text2); padding:0 10px; }
-.checkbox-grid { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
-.checkbox-grid label { display:flex; align-items:center; gap:6px; background:var(--surface2); padding:8px 12px; border-radius:6px; cursor:pointer; font-size:0.95em; color:var(--text); }
-.checkbox-grid input { width:auto; margin:0; }
-.badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:0.8em; font-weight:600; }
-.badge-pending { background:rgba(253,203,110,0.2); color:var(--gold); }
-.badge-approved { background:rgba(0,184,148,0.2); color:var(--green); }
-.badge-denied { background:rgba(225,112,85,0.2); color:var(--red); }
-.win { color:var(--green); } .loss { color:var(--red); }
-.actions { display:flex; gap:4px; }
-.match-card { background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:0; margin-bottom:16px; overflow:hidden; transition:transform .15s, box-shadow .15s; }
-.match-card:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(0,0,0,0.3); }
-.match-header { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; border-bottom:1px solid var(--border); background:var(--surface2); }
-.match-header .match-id { font-weight:700; color:var(--text2); font-size:0.9em; }
-.match-header .match-date { color:var(--text2); font-size:0.82em; }
-.match-body { display:flex; align-items:stretch; padding:20px; gap:0; }
-.match-team { flex:1; padding:12px 16px; border-radius:10px; }
-.match-team.winner { background:rgba(0,184,148,0.08); border:1px solid rgba(0,184,148,0.25); }
-.match-team.loser { background:rgba(225,112,85,0.05); border:1px solid rgba(225,112,85,0.12); }
-.match-team .team-label { font-size:0.75em; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px; font-weight:600; }
-.match-team.winner .team-label { color:var(--green); }
-.match-team.loser .team-label { color:var(--red); opacity:0.7; }
-.match-team .team-winner-tag { display:inline-block; background:var(--green); color:#fff; font-size:0.7em; padding:2px 8px; border-radius:4px; margin-left:6px; font-weight:700; letter-spacing:0.5px; vertical-align:middle; }
-.match-team .player-row { display:flex; justify-content:space-between; align-items:center; padding:5px 0; }
-.match-team .player-name { font-weight:500; font-size:0.95em; }
-.match-team.winner .player-name { color:var(--text); }
-.match-team.loser .player-name { color:var(--text2); }
-.match-team .player-mmr-change { font-weight:700; font-size:0.9em; }
-.match-team .player-mmr-change.up { color:var(--green); }
-.match-team .player-mmr-change.down { color:var(--red); }
-.preview-grid { display:flex; gap:16px; flex-wrap:wrap; }
-.preview-card { flex:1; min-width:220px; background:var(--surface2); border-radius:8px; padding:14px 16px; border:1px solid var(--border); }
-.preview-card .preview-title { font-size:0.85em; text-transform:uppercase; letter-spacing:1px; color:var(--accent2); margin-bottom:10px; font-weight:700; }
-.preview-section { margin-bottom:10px; }
-.preview-section:last-child { margin-bottom:0; }
-.preview-team-label { font-size:0.72em; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px; font-weight:600; }
-.preview-row { display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:0.92em; }
-.preview-name { color:var(--text); }
-.preview-change { font-weight:700; font-size:0.9em; }
-.preview-change.up { color:var(--green); }
-.preview-change.down { color:var(--red); }
-.match-vs { display:flex; align-items:center; justify-content:center; padding:0 16px; flex-shrink:0; }
-.match-vs span { font-size:1.3em; font-weight:800; color:var(--text2); opacity:0.4; letter-spacing:2px; }
-.match-empty { text-align:center; padding:60px 20px; color:var(--text2); }
-.match-empty .empty-icon { font-size:3em; margin-bottom:12px; opacity:0.3; }
-.match-empty p { font-size:1.05em; }
-.match-admin-actions { display:flex; gap:8px; padding:12px 20px; border-top:1px solid var(--border); background:var(--surface2); justify-content:flex-end; align-items:center; }
-.match-admin-actions .admin-label { font-size:0.75em; text-transform:uppercase; letter-spacing:1px; color:var(--text2); margin-right:auto; font-weight:600; }
-.btn-edit { background:var(--accent); } .btn-edit:hover { background:var(--accent2); }
-.btn-delete { background:var(--red); } .btn-delete:hover { background:#e08060; }
-@media(max-width:600px) { .container { padding:16px 8px; } .card { padding:16px; } th,td { padding:8px 6px; font-size:0.9em; }
-  .match-body { flex-direction:column; gap:12px; padding:16px; }
-  .match-vs { padding:4px 0; } .match-vs span { font-size:1em; }
-  .match-team { padding:10px 12px; }
-  .match-header { padding:10px 16px; }
-  .match-admin-actions { padding:10px 16px; flex-wrap:wrap; } }'''
+# The stylesheet now lives in static/style.css (linked from page()).
 
 RENAME_JS = '''
 function adminRenamePlayer(id, currentName, csrfToken) {
@@ -466,47 +379,505 @@ function adminDeletePlayer(id, name, csrfToken) {
 }
 '''
 
+# ---------- VIEW LAYER (redesign handoff) ----------
+
+FONTS = (
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    '<link href="https://fonts.googleapis.com/css2?'
+    'family=Archivo:wght@400;500;600;700;800&'
+    'family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">'
+)
+
+NAV_ITEMS = [
+    ('/', 'Ladder', 'leaderboard'),
+    ('/submit_match', 'Report', 'match'),
+    ('/balance', 'Balance', 'balance'),
+    ('/history', 'History', 'history'),
+]
+
+
 def page(title, content, nav_active=''):
-    nav_items = [('/', 'Leaderboard', 'leaderboard'),
-        ('/submit_match', 'Submit Match', 'match'), ('/balance', 'Team Balancer', 'balance'),
-        ('/history', 'Match History', 'history'), ('/admin', 'Admin', 'admin')]
-    nav_html = ''
-    for href, label, key in nav_items:
-        active = ' active' if key == nav_active else ''
-        nav_html += f'<a href="{href}" class="nav-link{active}">{label}</a>'
+    is_admin = bool(session.get('is_admin'))
+    links = ''.join(
+        f'<a href="{href}" class="nav-link{" active" if key == nav_active else ""}">{label}</a>'
+        for href, label, key in NAV_ITEMS
+    )
+    if is_admin:
+        right = ('<span class="admin-pill">Admin mode</span>'
+                 '<a href="/admin/panel" class="btn btn-ghost btn-sm">Panel</a>'
+                 '<a href="/admin/logout" class="btn btn-ghost btn-sm">Log out</a>')
+    else:
+        right = ('<span class="session-note">Signed out</span>'
+                 '<a href="/admin" class="btn btn-ghost btn-sm">Admin</a>')
     return f'''<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{esc(title)} - Empire Earth MMR</title><style>{CSS}</style></head><body>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{esc(title)} · Empire Earth MMR</title>
+{FONTS}
+<link rel="stylesheet" href="/static/style.css">
+</head><body>
 <script>{RENAME_JS}</script>
-<nav class="navbar"><span class="brand">Empire Earth MMR</span>{nav_html}</nav>
-<div class="container">{content}</div></body></html>'''
+<nav class="navbar">
+  <span class="brand">
+    <span class="brand-mark">E</span>
+    <span class="brand-text">
+      <span class="brand-name">Empire Earth</span>
+      <span class="brand-sub">MMR Ladder</span>
+    </span>
+  </span>
+  <span class="nav-links">{links}</span>
+  <span class="nav-right">{right}</span>
+</nav>
+<div class="container">{content}</div>
+</body></html>'''
+
 
 def flash_html(msg, type='success'):
-    return f'<div class="flash flash-{type}">{esc(msg)}</div>'
+    tag = 'Done' if type == 'success' else 'Error'
+    return (f'<div class="flash flash-{type}"><span class="tag">{tag}</span>'
+            f'<span>{esc(msg)}</span></div>')
+
+
+def _delta_span(chg):
+    # '+14' / '-9' -> coloured mono span. Uses a true minus sign for legibility.
+    if not chg:
+        return '<span class="delta">—</span>'
+    cls = 'up' if str(chg).startswith('+') else 'down'
+    text = str(chg).replace('-', '−')
+    return f'<span class="delta {cls}">{esc(text)}</span>'
+
+
+def _short_date(raw):
+    if not raw:
+        return '—'
+    dt = raw
+    if isinstance(dt, str):
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S',
+                    '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S.%f'):
+            try:
+                dt = datetime.strptime(raw, fmt); break
+            except Exception:
+                continue
+    return dt.strftime('%b %d') if isinstance(dt, datetime) else str(raw)[:10]
+
+
+def _long_date(raw):
+    if not raw:
+        return ''
+    dt = raw
+    if isinstance(dt, str):
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S',
+                    '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S.%f'):
+            try:
+                dt = datetime.strptime(raw, fmt); break
+            except Exception:
+                continue
+    return dt.strftime('%b %d, %Y · %H:%M') if isinstance(dt, datetime) else str(raw)[:16]
+
+
+def _chip(field, p, checked=False):
+    return (f'<label class="chip">'
+            f'<input type="checkbox" name="{field}" value="{p["id"]}"{" checked" if checked else ""}>'
+            f'<span class="box">&#10003;</span>'
+            f'<span class="cname">{esc(p["name"])}</span>'
+            f'<span class="cmmr">{p["mmr"]}</span></label>')
+
+
+def leaderboard_content():
+    all_players = query('SELECT * FROM players ORDER BY mmr DESC')
+    active = sorted([p for p in all_players if p['wins'] + p['losses'] > 0],
+                    key=lambda p: p['mmr'], reverse=True)
+    inactive = sorted([p for p in all_players if p['wins'] + p['losses'] == 0],
+                      key=lambda p: p['name'].lower())
+
+    # stat strip — two cheap extra queries
+    match_count = query('SELECT COUNT(*) as cnt FROM matches WHERE status=?', ('approved',), one=True)
+    match_count = match_count['cnt'] if match_count else 0
+    last = query("SELECT created_at FROM matches WHERE status='approved' ORDER BY id DESC LIMIT 1", one=True)
+    last_str = _short_date(last['created_at']) if last else '—'
+
+    stats = (f'<div class="stats">'
+             f'<div class="stat"><div class="stat-k">Players</div><div class="stat-v">{len(all_players)}</div></div>'
+             f'<div class="stat"><div class="stat-k">Matches</div><div class="stat-v">{match_count}</div></div>'
+             f'<div class="stat" style="min-width:130px"><div class="stat-k">Last match</div>'
+             f'<div class="stat-v">{esc(last_str)}</div></div>'
+             f'</div>')
+
+    rows = ''
+    for i, p in enumerate(active, 1):
+        total = p['wins'] + p['losses']
+        pct = round(p['wins'] / total * 100)
+        rank_cls = {1: 'r1', 2: 'r2', 3: 'r3'}.get(i, '')
+        fill_cls = '' if pct >= 50 else ('mid' if pct >= 35 else 'low')
+        tag = '<div class="player-tag">Champion</div>' if i == 1 else ''
+        rows += (
+            f'<div class="ladder-row{" top" if i == 1 else ""}">'
+            f'<div class="rank {rank_cls}">{i:02d}</div>'
+            f'<div class="player">'
+            f'<span class="avatar{" gold" if i == 1 else ""}">{esc(p["name"][:1].upper())}</span>'
+            f'<span><span class="player-name">{esc(p["name"])}</span>{tag}</span></div>'
+            f'<div class="mmr">{p["mmr"]}</div>'
+            f'<div class="record"><span class="w">{p["wins"]}</span> — <span class="l">{p["losses"]}</span></div>'
+            f'<div class="wr"><span class="wr-bar"><span class="wr-fill {fill_cls}" style="width:{pct}%"></span></span>'
+            f'<span class="wr-val">{pct}%</span></div>'
+            f'</div>'
+        )
+
+    if inactive:
+        rows += '<div class="group-label">Unranked · no games played</div>'
+        for p in inactive:
+            rows += (f'<div class="ladder-row unranked"><div class="rank" style="font-size:13px">—</div>'
+                     f'<div class="player"><span class="player-name" style="font-weight:500;font-size:14px">'
+                     f'{esc(p["name"])}</span></div>'
+                     f'<div class="dash">—</div><div class="dash">—</div><div class="dash">—</div></div>')
+
+    if not all_players:
+        rows = ('<div class="empty"><div class="big">Empty ladder</div>'
+                '<div>Add players from the admin panel to get started.</div></div>')
+
+    return f'''
+<div class="page-head">
+  <div><h1>Ladder</h1>
+  <div class="page-sub">OpenSkill (Plackett–Luce) rating · fresh players start at 1000</div></div>
+  {stats}
+</div>
+<div class="panel ladder">
+  <div class="ladder-head"><div>Rank</div><div>Player</div><div class="num-right">MMR</div>
+  <div class="num-right">W — L</div><div class="num-right">Win rate</div></div>
+  {rows}
+</div>'''
+
+
+def submit_match_content(msg, players):
+    chips1 = ''.join(_chip('team1', p) for p in players)
+    chips2 = ''.join(_chip('team2', p) for p in players)
+    return f'''
+<h1>Report a match</h1>
+<div class="page-sub" style="margin-bottom:24px">Pick both rosters, then mark the winner.
+Submissions wait for admin approval.</div>
+{msg}
+<form method="post">{csrf_field()}
+<div class="versus">
+  <div class="panel">
+    <div class="panel-head accent"><span class="panel-title accent">Team 1</span></div>
+    <div class="panel-body"><div class="chips">{chips1}</div></div>
+    <div style="padding:0 16px 16px">
+      <button type="submit" name="winner" value="team1" class="btn btn-pick on">Team 1 won</button>
+    </div>
+  </div>
+  <div class="versus-divider"><span class="rule"></span><span class="vs">VS</span><span class="rule down"></span></div>
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">Team 2</span></div>
+    <div class="panel-body"><div class="chips team2">{chips2}</div></div>
+    <div style="padding:0 16px 16px">
+      <button type="submit" name="winner" value="team2" class="btn btn-pick">Team 2 won</button>
+    </div>
+  </div>
+</div>
+<div class="form-footer">
+  <span class="hint">A player can't sit on both rosters. Pick the winning side to submit.</span>
+</div>
+</form>'''
+
+
+def balance_form(players):
+    chips = ''.join(_chip('players', p) for p in players)
+    return f'''
+<h1>Team balancer</h1>
+<div class="page-sub" style="margin-bottom:24px">Select who's playing.
+Uneven counts get an automatic MMR handicap.</div>
+<form method="post">{csrf_field()}
+<div class="panel" style="margin-bottom:24px">
+  <div class="panel-head"><span class="panel-title">Pool</span></div>
+  <div class="panel-body"><div class="chips">{chips}</div></div>
+  <div style="padding:0 16px 16px"><button type="submit" class="btn">Balance teams</button></div>
+</div>
+</form>'''
+
+
+def balance_result(t1, t2, diff, handicapped, deltas_t1_wins, deltas_t2_wins):
+    def team_block(team, label, accent):
+        rows = ''.join(
+            f'<div class="prow"><span class="n">{esc(p["name"])}</span>'
+            f'<span class="delta" style="color:var(--text-2)">{p["mmr"]}</span></div>'
+            for p in team)
+        return (f'<div class="split-team"><div class="split-head">'
+                f'<span class="panel-title{" accent" if accent else ""}">{label}</span>'
+                f'<span class="split-avg">avg <b>{team_avg_mmr(team):.0f}</b></span></div>'
+                f'<div class="rows">{rows}</div></div>')
+
+    def stake(label, deltas, accent):
+        r1 = ''.join(f'<div class="prow"><span class="n" style="font-weight:500;color:var(--text-2)">'
+                     f'{esc(p["name"])}</span>{_delta_span(deltas.get(p["name"], ""))}</div>' for p in t1)
+        r2 = ''.join(f'<div class="prow"><span class="n" style="font-weight:500;color:var(--text-2)">'
+                     f'{esc(p["name"])}</span>{_delta_span(deltas.get(p["name"], ""))}</div>' for p in t2)
+        return (f'<div><div class="stake-title{" accent" if accent else ""}">{label}</div>'
+                f'<div class="rows">{r1}<div class="sep"></div>{r2}</div></div>')
+
+    meta = (f'{len(t1)}v{len(t2)} · handicap applied' if handicapped
+            else f'MMR diff {diff:.0f}')
+    note = ('<div class="hint" style="padding:0 20px 18px">The smaller team is given a higher '
+            'average MMR to compensate for the numbers disadvantage.</div>') if handicapped else ''
+    return f'''
+<div class="panel" style="margin-bottom:24px">
+  <div class="panel-head"><span class="panel-title">Suggested split</span>
+  <span class="panel-meta" style="color:var(--win)">{meta}</span></div>
+  <div class="split">
+    {team_block(t1, 'Team 1', True)}
+    <div class="versus-divider"><span class="vs">VS</span></div>
+    {team_block(t2, 'Team 2', False)}
+  </div>
+  {note}
+</div>
+<div class="panel">
+  <div class="panel-head"><span class="panel-title">What's at stake</span></div>
+  <div class="stake">
+    {stake('If Team 1 wins', deltas_t1_wins, True)}
+    {stake('If Team 2 wins', deltas_t2_wins, False)}
+  </div>
+</div>'''
+
+
+def history_content():
+    status = request.args.get('status', '')
+    if status in ('pending', 'approved', 'denied'):
+        matches = query('SELECT * FROM matches WHERE status=? ORDER BY id DESC', (status,))
+    else:
+        matches = query('SELECT * FROM matches ORDER BY id DESC')
+    is_admin = bool(session.get('is_admin'))
+    most_recent = query('SELECT id FROM matches ORDER BY id DESC LIMIT 1', one=True)
+    most_recent_id = most_recent['id'] if most_recent else None
+
+    def filt(key, label):
+        on = (status == key) or (key == '' and status not in ('pending', 'approved', 'denied'))
+        href = '/history' if key == '' else f'/history?status={key}'
+        cls = 'btn btn-solid-2 btn-sm' if on else 'btn btn-ghost btn-sm'
+        return f'<a href="{href}" class="{cls}">{label}</a>'
+
+    cards = ''
+    for m in matches:
+        t1, t2 = json.loads(m['team1']), json.loads(m['team2'])
+        changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
+        t1_won = m['winner'] == 'team1'
+
+        def side(names, won, label):
+            rows = ''.join(f'<div class="prow"><span class="n">{esc(n)}</span>'
+                           f'{_delta_span(changes.get(n, ""))}</div>' for n in names)
+            suffix = ' · won' if won else ''
+            return (f'<div class="side{" won" if won else ""}">'
+                    f'<div class="side-label">{label}{suffix}</div>'
+                    f'<div class="rows">{rows}</div></div>')
+
+        foot = ''
+        if is_admin and m['status'] == 'pending':
+            foot = (f'<div class="match-foot"><span class="who">Awaiting approval</span>'
+                    f'<form method="post" action="/admin/approve/{m["id"]}" style="margin:0">{csrf_field()}'
+                    f'<button class="btn btn-win btn-sm">Approve</button></form>'
+                    f'<form method="post" action="/admin/deny/{m["id"]}" style="margin:0">{csrf_field()}'
+                    f'<button class="btn btn-danger btn-sm">Deny</button></form></div>')
+        elif is_admin and m['status'] == 'approved':
+            if m['id'] == most_recent_id:
+                actions = (f'<a href="/admin/edit_last_match" class="btn btn-solid-2 btn-sm">Edit</a>'
+                           f'<form method="post" action="/admin/delete_last_match" style="margin:0">{csrf_field()}'
+                           f'<button class="btn btn-danger btn-sm" onclick="return confirm('
+                           f"'Delete this match? MMR will be reversed.'"
+                           f')">Delete</button></form>')
+            else:
+                actions = (f'<form method="post" action="/admin/delete_match/{m["id"]}" style="margin:0">'
+                           f'{csrf_field()}<button class="btn btn-danger btn-sm" onclick="return confirm('
+                           f"'Delete match #" + str(m['id']) + " ? All MMR will be recalculated.'"
+                           f')">Delete</button></form>')
+            foot = f'<div class="match-foot"><span class="who">Admin actions</span>{actions}</div>'
+        elif is_admin and m['status'] == 'denied':
+            foot = (f'<div class="match-foot"><span class="who">Denied</span>'
+                    f'<form method="post" action="/admin/delete_denied_match/{m["id"]}" style="margin:0">'
+                    f'{csrf_field()}<button class="btn btn-danger btn-sm">Delete</button></form></div>')
+
+        cards += f'''<div class="match{" pending" if m["status"] == "pending" else ""}">
+  <div class="match-head">
+    <span style="display:flex;align-items:center;gap:12px">
+      <span class="match-id">#{m["id"]}</span>
+      <span class="badge badge-{esc(m["status"])}">{esc(m["status"])}</span>
+      <span class="match-meta">{len(t1)}v{len(t2)}</span>
+    </span>
+    <span class="match-meta">{esc(_long_date(m.get("created_at")))}</span>
+  </div>
+  <div class="match-body">
+    {side(t1, t1_won, 'Team 1')}
+    <div class="versus-divider"><span class="vs" style="color:var(--line-strong)">VS</span></div>
+    {side(t2, not t1_won, 'Team 2')}
+  </div>
+  {foot}
+</div>'''
+
+    if not matches:
+        cards = ('<div class="empty"><div class="big">No matches</div>'
+                 '<div>Reported results will appear here.</div></div>')
+
+    return f'''
+<div class="page-head">
+  <div><h1>Match history</h1>
+  <div class="page-sub">{len(matches)} matches · newest first</div></div>
+  <div class="filters">{filt('', 'All')}{filt('pending', 'Pending')}{filt('approved', 'Approved')}</div>
+</div>
+{cards}'''
+
+
+def admin_login_content(msg):
+    return f'''
+<div class="login-wrap"><div style="width:380px">
+  {msg}
+  <div class="login-card">
+    <div class="brand-mark">E</div>
+    <h2>Admin access</h2>
+    <p>Sessions expire after 30 minutes of inactivity.</p>
+    <form method="post">{csrf_field()}
+      <label class="field">Password</label>
+      <input type="password" name="password" placeholder="••••••••" required
+             style="margin-bottom:16px">
+      <button type="submit" class="btn" style="width:100%">Unlock</button>
+    </form>
+  </div>
+</div></div>'''
+
+
+def admin_panel_content(pending, players):
+    queue = ''
+    for m in pending:
+        t1, t2 = json.loads(m['team1']), json.loads(m['team2'])
+        changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
+        winner_label = 'Team 1 won' if m['winner'] == 'team1' else 'Team 2 won'
+        deltas = ' · '.join(
+            f'{esc(k)} <span class="{"up" if str(v).startswith("+") else "down"}" '
+            f'style="color:var(--{"win" if str(v).startswith("+") else "loss"})">'
+            f'{esc(str(v).replace("-", chr(0x2212)))}</span>'
+            for k, v in changes.items())
+        queue += f'''<div class="queue">
+  <div class="lines">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="match-id">#{m["id"]}</span>
+      <span class="badge badge-pending">pending</span>
+      <span class="match-meta">{esc(_long_date(m.get("created_at")))}</span>
+    </div>
+    <div class="who">{esc(", ".join(t1))} <span class="vs-lite">vs</span> {esc(", ".join(t2))}
+      <span class="match-meta" style="color:var(--win);margin-left:6px">{winner_label}</span></div>
+    <div class="deltas">{deltas}</div>
+  </div>
+  <div class="btn-row">
+    <form method="post" action="/admin/approve/{m["id"]}" style="margin:0">{csrf_field()}
+      <button class="btn btn-win">Approve</button></form>
+    <form method="post" action="/admin/deny/{m["id"]}" style="margin:0">{csrf_field()}
+      <button class="btn btn-danger">Deny</button></form>
+  </div>
+</div>'''
+    if not pending:
+        queue = ('<div class="empty" style="padding:36px 20px;margin-bottom:32px">'
+                 '<div class="big">Queue clear</div><div>No matches awaiting review.</div></div>')
+
+    rows = ''
+    for p in players:
+        js_name = p['name'].replace("'", "\\'")
+        unranked = ('<span class="tag-unranked">unranked</span>'
+                    if p['wins'] + p['losses'] == 0 else '')
+        rows += f'''<div class="prow-grid">
+  <div><span class="player-name" style="font-size:14px">{esc(p["name"])}</span>{unranked}</div>
+  <div class="mmr" style="font-size:14px">{p["mmr"]}</div>
+  <div class="record" style="font-size:12px">{p["wins"]} — {p["losses"]}</div>
+  <div class="acts">
+    <form method="post" action="/admin/set_mmr" style="display:flex;gap:6px;margin:0">{csrf_field()}
+      <input type="hidden" name="player_id" value="{p["id"]}">
+      <input name="mmr" type="number" value="{p["mmr"]}" class="mmr-input">
+      <button class="btn btn-solid-2 btn-sm">Set</button></form>
+    <button class="btn btn-ghost btn-sm"
+      onclick="adminRenamePlayer({p["id"]}, '{js_name}', '{csrf_token()}')">Rename</button>
+    <form method="post" action="/admin/reset/{p["id"]}" style="margin:0">{csrf_field()}
+      <button class="btn btn-ghost btn-sm">Reset</button></form>
+    <button class="btn btn-danger btn-sm"
+      onclick="adminDeletePlayer({p["id"]}, '{js_name}', '{csrf_token()}')">Del</button>
+  </div>
+</div>'''
+
+    return f'''
+<div class="page-head">
+  <div><h1>Admin</h1>
+  <div class="page-sub">{len(pending)} awaiting review · {len(players)} players</div></div>
+  <div class="btn-row">
+    <a href="/add_player" class="btn btn-sm" style="padding:11px 16px">+ Add player</a>
+    <form method="post" action="/admin/recalculate_mmr" style="margin:0">{csrf_field()}
+      <button class="btn btn-ghost btn-sm" style="padding:11px 16px"
+        onclick="return confirm('Recalculate all MMR from scratch?')">Recalculate MMR</button></form>
+  </div>
+</div>
+<div class="section-label">Approval queue</div>
+{queue}
+<div class="section-label">Players</div>
+<div class="panel ptable">
+  <div class="ladder-head"><div>Player</div><div class="num-right">MMR</div>
+  <div class="num-right">W — L</div><div class="num-right">Actions</div></div>
+  {rows}
+</div>'''
+
+
+def add_player_content(msg):
+    return f'''
+<div class="crumb"><a href="/admin/panel">Admin</a> / Add player</div>
+<h1 style="margin-bottom:24px">Add player</h1>
+{msg}
+<div class="card-form">
+  <form method="post">{csrf_field()}
+    <label class="field">Player name</label>
+    <input name="name" placeholder="Discord handle" required
+           style="font-family:var(--ui);margin-bottom:16px">
+    <div class="btn-row">
+      <button type="submit" class="btn">Add player</button>
+      <a href="/admin/panel" class="btn btn-ghost">Back</a>
+    </div>
+  </form>
+</div>'''
+
+
+def edit_match_content(m, players, old_t1, old_t2, old_winner, msg):
+    chips1 = ''.join(_chip('team1', p, p['name'] in old_t1) for p in players)
+    chips2 = ''.join(_chip('team2', p, p['name'] in old_t2) for p in players)
+    return f'''
+<div class="crumb"><a href="/history">History</a> / Edit #{m["id"]}</div>
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:6px">
+  <h1>Edit match</h1>
+  <span class="mmr" style="color:var(--amber);font-size:20px">#{m["id"]}</span>
+</div>
+<div class="page-sub" style="margin-bottom:24px">Saving replays every approved match, so all
+ratings are recalculated from scratch.</div>
+{msg}
+<form method="post">{csrf_field()}
+<div class="versus" style="margin-bottom:20px">
+  <div class="panel">
+    <div class="panel-head accent"><span class="panel-title accent">Team 1</span>
+      {'<span class="panel-meta" style="color:var(--win)">Winner</span>' if old_winner == 'team1' else ''}</div>
+    <div class="panel-body"><div class="chips">{chips1}</div></div>
+    <div style="padding:0 16px 16px">
+      <button type="submit" name="winner" value="team1"
+        class="btn btn-pick{' on' if old_winner == 'team1' else ''}">Team 1 won</button></div>
+  </div>
+  <div class="versus-divider"><span class="vs">VS</span></div>
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">Team 2</span>
+      {'<span class="panel-meta" style="color:var(--win)">Winner</span>' if old_winner == 'team2' else ''}</div>
+    <div class="panel-body"><div class="chips team2">{chips2}</div></div>
+    <div style="padding:0 16px 16px">
+      <button type="submit" name="winner" value="team2"
+        class="btn btn-pick{' on' if old_winner == 'team2' else ''}">Team 2 won</button></div>
+  </div>
+</div>
+<div class="btn-row" style="border-top:1px solid var(--line-soft);padding-top:20px">
+  <a href="/history" class="btn btn-ghost">Cancel</a>
+</div>
+</form>'''
 
 
 # ---------- ROUTES ----------
 @app.route('/')
 def leaderboard():
-    all_players = query('SELECT * FROM players ORDER BY mmr DESC')
-    # Separate active (played at least 1 game) from inactive (0 games)
-    active = [p for p in all_players if p['wins'] + p['losses'] > 0]
-    inactive = [p for p in all_players if p['wins'] + p['losses'] == 0]
-    # Sort active by MMR desc, inactive by name
-    active.sort(key=lambda p: p['mmr'], reverse=True)
-    inactive.sort(key=lambda p: p['name'].lower())
-    rows = ''
-    for i, p in enumerate(active, 1):
-        medal = ['&#129351;','&#129352;','&#129353;'][i-1] if i <= 3 else str(i)
-        total = p['wins'] + p['losses']
-        wr = f"{p['wins']/total*100:.0f}%"
-        rows += f'<tr><td class="rank">{medal}</td><td><strong>{esc(p["name"])}</strong></td><td class="mmr">{p["mmr"]}</td><td class="win">{p["wins"]}</td><td class="loss">{p["losses"]}</td><td>{wr}</td></tr>'
-    # Inactive players listed below with N/A for all stats
-    for p in inactive:
-        rows += f'<tr style="opacity:0.5"><td class="rank">-</td><td><strong>{esc(p["name"])}</strong></td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td><td class="na-text">N/A</td></tr>'
-    empty = '<p style="color:var(--text2);padding:20px;text-align:center">No players yet. Add some!</p>' if not all_players else ''
-    content = f'<h1>Leaderboard</h1><div class="card"><table><tr><th>#</th><th>Player</th><th>MMR</th><th>W</th><th>L</th><th>WR</th></tr>{rows}</table>{empty}</div>'
-    return page('Leaderboard', content, 'leaderboard')
+    return page('Leaderboard', leaderboard_content(), 'leaderboard')
 
 @app.route('/rename_player', methods=['POST'])
 @admin_required
@@ -598,7 +969,7 @@ def add_player():
                 msg = flash_html(f'Player {name} added with {DEFAULT_MMR} MMR!')
             except:
                 msg = flash_html(f'Player already exists.', 'error')
-    content = f'<h1>Add Player</h1>{msg}<div class="card"><form method="post">{csrf_field()}<label>Player Name</label><input name="name" placeholder="Enter player name" required><button type="submit">Add Player</button></form></div>'
+    content = add_player_content(msg)
     return page('Add Player', content, 'add')
 
 @app.route('/submit_match', methods=['GET','POST'])
@@ -638,9 +1009,7 @@ def submit_match():
                 msg = flash_html(f'Match recorded! MMR changes: {summary}')
             else:
                 msg = flash_html(f'Match submitted for admin approval. Estimated changes: {summary}')
-    checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
-    checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
-    content = f'<h1>Submit Match Result</h1>{msg}<div class="card"><form method="post">{csrf_field()}<label>Team 1</label><div class="checkbox-grid">{checks1}</div><label>Team 2</label><div class="checkbox-grid">{checks2}</div><label>Winner</label><select name="winner"><option value="team1">Team 1</option><option value="team2">Team 2</option></select><button type="submit">Submit Match</button></form></div>'
+    content = submit_match_content(msg, players)
     return page('Submit Match', content, 'match')
 
 
@@ -658,105 +1027,15 @@ def balance():
         else:
             t1, t2, diff, handicapped = balance_teams([int(x) for x in sel])
             if t1 and t2:
-                t1_html = ''.join(f'<div>{esc(p["name"])} <span class="mmr">({p["mmr"]})</span></div>' for p in t1)
-                t2_html = ''.join(f'<div>{esc(p["name"])} <span class="mmr">({p["mmr"]})</span></div>' for p in t2)
-                avg1, avg2 = team_avg_mmr(t1), team_avg_mmr(t2)
-                if handicapped:
-                    title = f'Balanced Teams (handicap applied: {len(t1)}v{len(t2)})'
-                    handicap_note = f'<p style="color:var(--text2);font-size:0.85em;margin-top:10px">The {len(t1)}-player team is given a higher average MMR to compensate for the numbers disadvantage.</p>'
-                else:
-                    title = f'Balanced Teams (MMR diff: {diff:.0f})'
-                    handicap_note = ''
                 deltas_t1_wins = preview_openskill_deltas(t1, t2)
                 deltas_t2_wins = preview_openskill_deltas(t2, t1)
-                def _preview_row(p, deltas):
-                    chg = deltas.get(p['name'], '')
-                    arrow = '&#9650; ' if chg.startswith('+') else '&#9660; ' if chg.startswith('-') else ''
-                    css = 'up' if chg.startswith('+') else 'down' if chg.startswith('-') else ''
-                    return f'<div class="preview-row"><span class="preview-name">{esc(p["name"])}</span><span class="preview-change {css}">{arrow}{esc(chg)}</span></div>'
-                def _preview_card(label, deltas):
-                    rows1 = ''.join(_preview_row(p, deltas) for p in t1)
-                    rows2 = ''.join(_preview_row(p, deltas) for p in t2)
-                    return (f'<div class="preview-card"><div class="preview-title">{label}</div>'
-                            f'<div class="preview-section"><div class="preview-team-label">Team 1</div>{rows1}</div>'
-                            f'<div class="preview-section"><div class="preview-team-label">Team 2</div>{rows2}</div></div>')
-                preview_html = ('<div class="card"><h3 style="margin-bottom:12px">Score Preview</h3>'
-                                '<div class="preview-grid">'
-                                + _preview_card('If Team 1 wins', deltas_t1_wins)
-                                + _preview_card('If Team 2 wins', deltas_t2_wins)
-                                + '</div></div>')
-                result = f'<div class="card"><h3 style="margin-bottom:12px">{title}</h3><div class="teams-row"><div class="team-card"><h3 style="color:var(--accent2)">Team 1 ({len(t1)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg1:.0f}</span></h3>{t1_html}</div><div class="vs">VS</div><div class="team-card"><h3 style="color:var(--gold)">Team 2 ({len(t2)}) <span style="font-size:0.8em;color:var(--text2)">avg {avg2:.0f}</span></h3>{t2_html}</div></div>{handicap_note}</div>{preview_html}'
-    checks = ''.join(f'<label><input type="checkbox" name="players" value="{p["id"]}">{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
-    content = f'<h1>Team Balancer</h1><div class="card"><form method="post">{csrf_field()}<label>Select Players</label><div class="checkbox-grid">{checks}</div><button type="submit">Balance Teams</button></form></div>{result}'
+                result = balance_result(t1, t2, diff, handicapped, deltas_t1_wins, deltas_t2_wins)
+    content = balance_form(players) + result
     return page('Team Balancer', content, 'balance')
 
 @app.route('/history')
 def history():
-    matches = query('SELECT * FROM matches ORDER BY id DESC')
-    is_admin = session.get('is_admin', False)
-    most_recent_id = matches[0]['id'] if matches else None
-    cards = ''
-    for m in matches:
-        t1 = json.loads(m['team1'])
-        t2 = json.loads(m['team2'])
-        changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
-        badge_cls = {'pending':'badge-pending','approved':'badge-approved','denied':'badge-denied'}.get(m['status'],'')
-        is_t1_winner = m['winner'] == 'team1'
-        # Format date
-        date_str = ''
-        if m.get('created_at'):
-            try:
-                dt = m['created_at']
-                if isinstance(dt, str):
-                    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S.%f'):
-                        try:
-                            dt = datetime.strptime(dt, fmt)
-                            break
-                        except:
-                            continue
-                if isinstance(dt, datetime):
-                    date_str = dt.strftime('%b %d, %Y at %I:%M %p')
-            except:
-                date_str = str(m['created_at'])[:16]
-        # Build player rows for each team
-        def build_players(names, is_winner):
-            html = ''
-            for name in names:
-                chg = changes.get(name, '')
-                arrow = '&#9650; ' if chg.startswith('+') else '&#9660; ' if chg.startswith('-') else ''
-                css = 'up' if chg.startswith('+') else 'down' if chg.startswith('-') else ''
-                html += f'<div class="player-row"><span class="player-name">{esc(name)}</span><span class="player-mmr-change {css}">{arrow}{esc(chg)}</span></div>'
-            return html
-        w_class = 'winner' if is_t1_winner else 'loser'
-        l_class = 'loser' if is_t1_winner else 'winner'
-        w_tag = '<span class="team-winner-tag">WINNER</span>'
-        t1_label = f'Team 1 {w_tag if is_t1_winner else ""}'
-        t2_label = f'Team 2 {w_tag if not is_t1_winner else ""}'
-        # Admin buttons: edit/delete for most recent, delete for all others
-        admin_btns = ''
-        if is_admin and m['status'] == 'approved':
-            admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
-            if m['id'] == most_recent_id:
-                admin_btns += '<a href="/admin/edit_last_match" class="btn btn-sm btn-edit">Edit Match</a>'
-                admin_btns += f'<form method="post" action="/admin/delete_last_match" style="display:inline;margin:0">{csrf_field()}<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete this match? MMR will be reversed.\')">Delete Match</button></form>'
-            else:
-                admin_btns += '<form method="post" action="/admin/delete_match/' + str(m["id"]) + '" style="margin:0">' + csrf_field() + '<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete match #' + str(m["id"]) + '? All MMR will be recalculated from scratch. This cannot be undone.\')">Delete Match</button></form>'
-            admin_btns += '</div>'
-        elif is_admin and m['status'] == 'denied':
-            admin_btns = '<div class="match-admin-actions"><span class="admin-label">Admin</span>'
-            admin_btns += '<form method="post" action="/admin/delete_denied_match/' + str(m["id"]) + '" style="margin:0">' + csrf_field() + '<button type="submit" class="btn btn-sm btn-delete" onclick="return confirm(\'Delete denied match #' + str(m["id"]) + '?\')">Delete Match</button></form>'
-            admin_btns += '</div>'
-        cards += f'<div class="match-card">'
-        cards += f'<div class="match-header"><div><span class="match-id">Match #{m["id"]}</span> <span class="badge {badge_cls}" style="margin-left:8px">{esc(m["status"])}</span></div><div class="match-date">{date_str}</div></div>'
-        cards += f'<div class="match-body">'
-        cards += f'<div class="match-team {w_class}"><div class="team-label">{t1_label}</div>{build_players(t1, is_t1_winner)}</div>'
-        cards += f'<div class="match-vs"><span>VS</span></div>'
-        cards += f'<div class="match-team {l_class}"><div class="team-label">{t2_label}</div>{build_players(t2, not is_t1_winner)}</div>'
-        cards += f'</div>{admin_btns}</div>'
-    if not matches:
-        cards = '<div class="match-empty"><div class="empty-icon">&#9876;</div><p>No matches recorded yet.</p></div>'
-    content = f'<h1>Match History</h1>{cards}'
-    return page('Match History', content, 'history')
+    return page('Match History', history_content(), 'history')
 
 
 # ---------- ADMIN ----------
@@ -773,7 +1052,7 @@ def admin_login():
             session['admin_login_time'] = time.time()
             return redirect(url_for('admin_panel'))
             msg = flash_html('Wrong password.', 'error')
-    content = f'<h1>Admin Login</h1>{msg}<div class="card"><form method="post">{csrf_field()}<label>Admin Password</label><input type="password" name="password" placeholder="Enter password" required><button type="submit">Login</button></form></div>'
+    content = admin_login_content(msg)
     return page('Admin', content, 'admin')
 
 @app.route('/admin/panel')
@@ -781,31 +1060,7 @@ def admin_login():
 def admin_panel():
     pending = query("SELECT * FROM matches WHERE status='pending' ORDER BY id DESC")
     players = query('SELECT * FROM players ORDER BY name')
-    pending_html = ''
-    for m in pending:
-        t1 = json.loads(m['team1'])
-        t2 = json.loads(m['team2'])
-        changes = json.loads(m['mmr_changes']) if m['mmr_changes'] else {}
-        winner_label = 'Team 1' if m['winner'] == 'team1' else 'Team 2'
-        change_str = ', '.join(f'{esc(k)}: {esc(v)}' for k,v in changes.items())
-        pending_html += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><div><strong>Match #{m["id"]}</strong><br>{esc(", ".join(t1))} vs {esc(", ".join(t2))}<br>Winner: {winner_label} | Changes: {change_str}</div><div><form method="post" action="/admin/approve/{m["id"]}" style="display:inline;margin:0;margin-right:8px">{csrf_field()}<button type="submit" class="btn btn-green">Approve</button></form><form method="post" action="/admin/deny/{m["id"]}" style="display:inline;margin:0">{csrf_field()}<button type="submit" class="btn btn-red">Deny</button></form></div></div>'
-    if not pending:
-        pending_html = '<p style="color:var(--text2)">No pending matches.</p>'
-    player_rows = ''
-    for p in players:
-        esc_name = p['name'].replace("'", "\\'")
-        player_rows += f'<div class="card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
-        player_rows += f'<div><strong>{esc(p["name"])}</strong> - MMR: <span class="mmr">{p["mmr"]}</span> | W:{p["wins"]} L:{p["losses"]}</div>'
-        player_rows += f'<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">'
-        player_rows += f'<form method="post" action="/admin/set_mmr" style="display:flex;gap:4px;align-items:center;margin:0">{csrf_field()}'
-        player_rows += f'<input type="hidden" name="player_id" value="{p["id"]}">'
-        player_rows += f'<input name="mmr" type="number" value="{p["mmr"]}" style="width:80px;margin:0">'
-        player_rows += f'<button type="submit" class="btn btn-sm">Set</button></form>'
-        player_rows += f'<button class="btn btn-sm btn-outline" onclick="adminRenamePlayer({p["id"]}, \'{esc_name}\', \'{csrf_token()}\')">Rename</button>'
-        player_rows += f'<form method="post" action="/admin/reset/{p["id"]}" style="display:inline;margin:0">{csrf_field()}<button type="submit" class="btn btn-sm btn-red">Reset</button></form>'
-        player_rows += f'<button class="btn btn-sm btn-red" onclick="adminDeletePlayer({p["id"]}, \'{esc_name}\', \'{csrf_token()}\')">Delete</button>'
-        player_rows += f'</div></div>'
-    content = f'<h1>Admin Panel</h1><div style="margin-bottom:8px"><a href="/admin/logout" class="btn btn-red" style="font-size:0.85em">Logout</a> <a href="/add_player" class="btn" style="font-size:0.85em;margin-left:8px">+ Add Player</a> <form method="post" action="/admin/recalculate_mmr" style="display:inline;margin:0;margin-left:8px">{csrf_field()}<button type="submit" class="btn" style="font-size:0.85em" onclick="return confirm(\'Recalculate all MMR from scratch?\')">Recalculate MMR</button></form></div><h2 style="margin:20px 0 12px;font-size:1.2em">Pending Matches</h2>{pending_html}<h2 style="margin:20px 0 12px;font-size:1.2em">Manage Players</h2>{player_rows}'
+    content = admin_panel_content(pending, players)
     return page('Admin Panel', content, 'admin')
 
 @app.route('/admin/approve/<int:match_id>', methods=['POST'])
@@ -915,17 +1170,7 @@ def edit_last_match():
     old_t1 = json.loads(m['team1'])
     old_t2 = json.loads(m['team2'])
     old_winner = m['winner']
-    checks1 = ''.join(f'<label><input type="checkbox" name="team1" value="{p["id"]}"{" checked" if p["name"] in old_t1 else ""}>{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
-    checks2 = ''.join(f'<label><input type="checkbox" name="team2" value="{p["id"]}"{" checked" if p["name"] in old_t2 else ""}>{esc(p["name"])} ({p["mmr"]})</label>' for p in players)
-    sel1 = ' selected' if old_winner == 'team1' else ''
-    sel2 = ' selected' if old_winner == 'team2' else ''
-    content = f'<h1>Edit Match #{m["id"]}</h1>{msg}'
-    content += f'<div class="card"><form method="post">{csrf_field()}'
-    content += f'<label>Team 1</label><div class="checkbox-grid">{checks1}</div>'
-    content += f'<label>Team 2</label><div class="checkbox-grid">{checks2}</div>'
-    content += f'<label>Winner</label><select name="winner"><option value="team1"{sel1}>Team 1</option><option value="team2"{sel2}>Team 2</option></select>'
-    content += f'<div style="display:flex;gap:8px;margin-top:8px"><button type="submit" class="btn">Save Changes</button><a href="/history" class="btn btn-outline">Cancel</a></div>'
-    content += f'</form></div>'
+    content = edit_match_content(m, players, old_t1, old_t2, old_winner, msg)
     return page('Edit Match', content, 'history')
 
 @app.route('/admin/set_mmr', methods=['POST'])
