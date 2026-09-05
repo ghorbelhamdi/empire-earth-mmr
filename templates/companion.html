@@ -1,0 +1,25 @@
+<link rel="stylesheet" href="/static/companion.css">
+<div class="page-head"><div><div class="crumb">Original Empire Earth · Windows</div><h1>From battlefield to ladder.</h1><p class="page-sub">Capture your Military screen, check the numbers, report the result.</p></div></div>
+<section class="companion-hero panel">
+  <div class="companion-intro">
+    <span class="companion-tag">Empire Earth Companion · Preview</span>
+    <h2>Your post-game ritual,<br>with less typing.</h2>
+    <p>The companion watches your game window and reads units killed and units lost from the post-game Military screen. You choose the teams, confirm the winner, and review every number before sending.</p>
+    <div class="btn-row">{% if download_url %}<a class="btn" href="{{ download_url }}">Download for Windows</a>{% else %}<a class="btn" href="https://github.com/ghorbelhamdi/empire-earth-mmr/tree/dev/mmr-companion/companion">Companion source &amp; build instructions</a>{% endif %}<a class="btn btn-ghost" href="/admin/companion">Manage access</a></div>
+    <p class="hint">Windows 10 / 11 · 64-bit · Portable preview build</p>
+  </div>
+  <div class="companion-scorecard" aria-label="Example of captured military statistics">
+    <div class="companion-scorehead"><span class="companion-dot"></span> Military screen captured <span>EXAMPLE</span></div>
+    <table class="companion-table"><thead><tr><th>Player</th><th>Killed</th><th>Lost</th></tr></thead><tbody><tr><td><span class="player-swatch red"></span>De3ech</td><td>136</td><td>55</td></tr><tr><td><span class="player-swatch blue"></span>momo007mkaouar</td><td>91</td><td>55</td></tr><tr><td><span class="player-swatch yellow"></span>Mouaddeb2</td><td>93</td><td>175</td></tr><tr><td><span class="player-swatch purple"></span>brahim129</td><td>16</td><td>52</td></tr></tbody></table>
+    <div class="companion-review-note">Review numbers &nbsp; → &nbsp; Confirm result &nbsp; → &nbsp; Admin approval</div>
+  </div>
+</section>
+<div class="companion-steps">
+  <section class="panel"><span class="step-number">01</span><h3>Connect once</h3><p>Ask your ladder admin for a device token. Open the companion, enter the server address and your token, then connect.</p><code>{{ api_base_url }}</code></section>
+  <section class="panel"><span class="step-number">02</span><h3>Play, then capture</h3><p>Start watching. After your match, open the Military tab and leave the game visible. You can also capture manually or import a screenshot.</p></section>
+  <section class="panel"><span class="step-number">03</span><h3>Check and submit</h3><p>Match each name to a ladder player, check kills and losses, and select the winning team. Preview the MMR changes and submit for approval.</p></section>
+</div>
+<div class="companion-info-grid">
+  <section class="panel"><div class="panel-head"><h2 class="panel-title accent">How military stats affect MMR</h2></div><div class="panel-body companion-prose"><p><strong>Winning remains the main signal.</strong> OpenSkill accounts for your opponents, teammates, and rating uncertainty.</p><p>Confirmed military stats make a small adjustment within each team, capped at 10% of each player's underlying skill change. The team's total skill change stays the same. Equal contributions and one-player teams receive no military adjustment.</p><p>Matches without stats use the usual result-based calculation. Previously recorded matches keep their original rating version.</p></div></section>
+  <section class="panel"><div class="panel-head"><h2 class="panel-title">Built for review</h2></div><div class="panel-body companion-prose"><p><strong>OCR runs on your computer.</strong> Captures stay local; only reviewed numbers and capture metadata go to the ladder.</p><p>Every companion report needs admin approval. Text recognition can misread names or digits, so your review is required. Military statistics do not identify the winning team.</p><p>If fullscreen capture is blank, use windowed mode or import a screenshot. This preview reads the English Military screen; manual entry works with other languages.</p></div></section>
+</div>
