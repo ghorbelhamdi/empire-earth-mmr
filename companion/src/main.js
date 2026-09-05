@@ -16,10 +16,15 @@ let watching = false, watchTimer, watchGeneration = 0, busy = false, submitting 
 let status = 'Connect your ladder, then capture a Military screen or enter a match.';
 let dataDir;
 const uiFile = path.join(__dirname, 'ui', 'index.html');
+const smokeMode = process.argv.includes('--smoke-test');
+const smokeProfile = process.argv.find(argument => argument.startsWith('--smoke-profile='))?.slice('--smoke-profile='.length);
 const smokeWatchImage = process.argv.find(argument => argument.startsWith('--smoke-watch-image='));
-const smokeWatch = process.argv.includes('--smoke-test') && (process.argv.includes('--smoke-watch-game') || Boolean(smokeWatchImage));
+const smokeWatch = smokeMode && (process.argv.includes('--smoke-watch-game') || Boolean(smokeWatchImage));
 // Diagnostic runs must not load or modify a player's real token and match draft.
-if (process.argv.includes('--smoke-test')) app.setPath('userData', path.join(app.getPath('temp'), 'empire-earth-companion-smoke'));
+if (smokeMode) {
+  if (smokeProfile && !/^[a-z0-9_-]{1,64}$/i.test(smokeProfile)) throw new Error('Use a simple name for the isolated smoke profile.');
+  app.setPath('userData', path.join(app.getPath('temp'), `empire-earth-companion-smoke${smokeProfile ? '-' + smokeProfile : ''}`));
+}
 if (!app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => { if (mainWindow?.isMinimized()) mainWindow.restore(); mainWindow?.focus(); });
 
@@ -162,13 +167,19 @@ const handlers = {
     const server = normalizeServer(value.server);
     const serverChanged = server !== config.server;
     if (serverChanged && draft.pendingPayload && !draft.result) throw new Error('Retry the pending submission before changing servers.');
+    if (serverChanged && busy) throw new Error('Wait for the current capture to finish before changing the server.');
+    if (serverChanged) stopWatch();
+    if (!value.clearToken && !serverChanged && !String(value.token || '').trim() && config.encryptedToken && !token) {
+      throw new Error('A token is saved, but Windows could not unlock it. Paste a replacement token or use Forget token. Your saved token has not been changed.');
+    }
     let nextToken = typeof value.token === 'string' && value.token.trim() ? value.token.trim() : serverChanged ? '' : token;
     if (value.clearToken) nextToken = '';
     if (nextToken.length > 4096 || /[\r\n]/.test(nextToken)) throw new Error('Invalid token.');
     if (nextToken && !safeStorage.isEncryptionAvailable()) throw new Error('Windows secure credential storage is unavailable. The token was not saved.');
-    config = { server, encryptedToken: nextToken ? safeStorage.encryptString(nextToken).toString('base64') : null };
+    const nextConfig = { server, encryptedToken: nextToken ? safeStorage.encryptString(nextToken).toString('base64') : null };
+    await writeJSON('settings.json', nextConfig);
+    config = nextConfig;
     token = nextToken;
-    await writeJSON('settings.json', config);
     if (serverChanged && !draft.pendingPayload) {
       draft.rows = draft.rows.map(row => ({ ...row, player_id: null }));
       draft.stats_confirmed = false;
@@ -198,6 +209,20 @@ const handlers = {
     await takeCapture({ manual: true });
     return publicState();
   },
+  'capture:reread': async () => {
+    ensureEditable();
+    if (busy || submitting) throw new Error('Wait for the current action to finish.');
+    if (!draft.screenshotPath) throw new Error('Capture or import an image first.');
+    if (draft.rows.length) {
+      const answer = await dialog.showMessageBox(mainWindow, { type: 'question', buttons: ['Keep draft', 'Read image again'], defaultId: 0, cancelId: 0,
+        message: 'Read this capture again?', detail: 'The current draft will be archived locally. Check the new numbers and player mappings, then choose the winner again.' });
+      if (answer.response !== 1) return publicState();
+    }
+    stopWatch();
+    const buffer = await fs.readFile(draft.screenshotPath);
+    await takeCapture({ manual: true, imported: buffer });
+    return publicState();
+  },
   'capture:import': async () => {
     ensureEditable();
     stopWatch();
@@ -217,7 +242,12 @@ const handlers = {
     ensureEditable();
     if (busy) throw new Error('Wait until the capture finishes before editing the draft.');
     if (!Array.isArray(value.rows) || value.rows.length > 10) throw new Error('A match supports at most 10 players.');
-    draft.rows = value.rows.map(row => ({ ocr_name: String(row.ocr_name || '').slice(0, 120), player_id: Number.isInteger(row.player_id) ? row.player_id : null,
+    draft.rows = value.rows.map(row => ({ ocr_name: String(row.ocr_name || '').slice(0, 120),
+      ocr_name_raw: String(row.ocr_name_raw || '').slice(0, 120),
+      ocr_name_candidates: Array.isArray(row.ocr_name_candidates) ? row.ocr_name_candidates.slice(0, 5).map(name => String(name).slice(0, 120)) : [],
+      suggested_player_id: Number.isInteger(row.suggested_player_id) ? row.suggested_player_id : null,
+      suggested_player_name: String(row.suggested_player_name || '').slice(0, 120),
+      player_id: Number.isInteger(row.player_id) ? row.player_id : null,
       team: ['team1', 'team2'].includes(row.team) ? row.team : '', units_killed: row.units_killed, units_lost: row.units_lost }));
     draft.winner = ['team1', 'team2'].includes(value.winner) ? value.winner : '';
     draft.stats_confirmed = value.stats_confirmed === true;
@@ -227,7 +257,7 @@ const handlers = {
   'draft:new': async () => {
     if (busy || submitting) throw new Error('Wait for the current action to finish.');
     const ambiguous = draft.pendingPayload && !draft.result;
-    if (ambiguous || draft.rows.length && !draft.result) {
+    if (ambiguous || (draft.rows.length || draft.evidence) && !draft.result) {
       const answer = await dialog.showMessageBox(mainWindow, { type: 'warning', buttons: ['Keep draft', 'Start new match'], defaultId: 0, cancelId: 0,
         message: ambiguous ? 'The previous submission may already exist on the ladder.' : 'Start a new match?',
         detail: ambiguous ? 'Retry first to retrieve its result. Starting another draft for the same match could create a duplicate. The current draft will be archived locally.' : 'Your current draft will be archived locally before starting a new one.' });
@@ -262,7 +292,7 @@ app.whenReady().then(async () => {
   }
   const savedDraft = await readJSON('draft.json', null);
   if (savedDraft && typeof savedDraft.submission_id === 'string' && Array.isArray(savedDraft.rows)) draft = savedDraft;
-  mainWindow = new BrowserWindow({ show: !smokeWatch, width: 1320, height: 940, minWidth: 1050, minHeight: 750, backgroundColor: '#0a0b0d', title: 'Empire Earth Companion',
+  mainWindow = new BrowserWindow({ show: !smokeMode || process.argv.includes('--smoke-capture'), width: 1320, height: 940, minWidth: 1050, minHeight: 750, backgroundColor: '#0a0b0d', title: 'Empire Earth Companion',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
   mainWindow.removeMenu();
   let closeReady = false;
@@ -285,6 +315,7 @@ app.whenReady().then(async () => {
   if (process.argv.includes('--smoke-test')) {
     await new Promise(resolve => setTimeout(resolve, 1500));
     const check = await mainWindow.webContents.executeJavaScript('({title: document.title, bridge: typeof window.companion, rows: document.querySelectorAll("#players-body tr").length, node: typeof require, text: document.body.innerText})');
+    check.connection = { hasToken: Boolean(token), players: players.length };
     if (smokeWatch) {
       draft = newDraft(); watching = true;
       await takeCapture(smokeWatchImage ? { imported: await fs.readFile(smokeWatchImage.slice('--smoke-watch-image='.length)) } : {});

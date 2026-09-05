@@ -1,6 +1,6 @@
 {
   "name": "empire-earth-companion",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local post-game capture and reviewed ladder submissions for Empire Earth",
   "main": "src/main.js",
   "author": "Empire Earth MMR",

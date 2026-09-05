@@ -2,6 +2,23 @@
 const { PNG } = require('pngjs');
 function readImage(buffer) { return PNG.sync.read(buffer); }
 function fullImageScale(image) { return image.width <= 3000 ? 2 : 1; }
+// Excess blank space around a tiny glyph makes Tesseract's word model unreliable.
+// Retain all ink, including multiple digits, then give the enlarged text a small margin.
+function trimInk(buffer, padding = 10) {
+  const source = readImage(buffer);
+  let left = source.width, right = -1, top = source.height, bottom = -1;
+  for (let y = 0; y < source.height; y++) for (let x = 0; x < source.width; x++) {
+    if (source.data[(y * source.width + x) * 4] < 128) {
+      left = Math.min(left, x); right = Math.max(right, x);
+      top = Math.min(top, y); bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < left) return null;
+  const output = new PNG({ width: right - left + 1 + padding * 2, height: bottom - top + 1 + padding * 2 });
+  output.data.fill(255);
+  PNG.bitblt(source, output, left, top, right - left + 1, bottom - top + 1, padding, padding);
+  return PNG.sync.write(output);
+}
 // Crop around glyphs, excluding bar borders; padding gives OCR a clean margin.
 function prepareRegion(image, rectangle, { threshold = 145, scale = 3, padding = 20 } = {}) {
   const left = Math.max(0, Math.floor(rectangle.left)), top = Math.max(0, Math.floor(rectangle.top));
@@ -21,4 +38,4 @@ function prepareForOCR(buffer, threshold = 185) {
   const image = Buffer.isBuffer(buffer) ? readImage(buffer) : buffer;
   return prepareRegion(image, { left: 0, top: 0, width: image.width, height: image.height }, { threshold, scale: fullImageScale(image), padding: 0 });
 }
-module.exports = { readImage, fullImageScale, prepareRegion, prepareForOCR };
+module.exports = { readImage, fullImageScale, prepareRegion, prepareForOCR, trimInk };

@@ -4,10 +4,10 @@ This companion supports the **original Empire Earth**, including the window titl
 
 ## Use it
 
-1. Run `Empire-Earth-Companion-0.1.1.exe` on Windows 10/11 x64. This is a portable, unsigned build; no administrator rights are required.
-2. Ask your ladder administrator to create a device token on the ladder’s **Companion** page. Enter `https://empire-mmr.duckdns.org` and that token, then click **Connect ladder**.
+1. Run `Empire-Earth-Companion-0.1.2.exe` on Windows 10/11 x64. This is a portable, unsigned build; no administrator rights are required.
+2. Ask your ladder administrator to create a device token on the ladder’s **Companion** page. Enter `https://empire-mmr.duckdns.org` and that token, then click **Save & connect**. The app shows when the token is saved and reconnects automatically when reopened. Leave the password field blank to keep the saved token.
 3. Click **Watch for game** before playing. At the end, open **Military** and keep **Units Killed** and **Units Lost** visible. The companion watches only the identified game window, runs English OCR locally, and stops when it finds a draft. Capture polling waits eight seconds after each OCR pass.
-4. Alternatively, choose **Capture now**, **Import image**, or **Add player** to enter the match manually.
+4. Alternatively, choose **Capture now**, **Import image**, or **Add player** to enter the match manually. **Zoom image** enlarges the original capture for review. **Read image again** runs the current OCR on the saved capture and archives the previous draft after confirmation. If a draft already exists, **Watch next game** offers to archive it before starting another capture; cancel keeps the current draft.
 5. Map every row to a ladder player. Correct all kills/losses, assign both teams, and choose the winner. Check the confirmation, click **Preview MMR**, then **Submit for approval**.
 
 All submissions start in the approval queue. Approval is required before the match changes ratings. Previewed values can change if other matches are approved first. The companion never determines the winner from military numbers, and never submits automatically.
@@ -17,9 +17,9 @@ All submissions start in the approval queue. Approval is required before the mat
 - The game must have a visible window titled **Empire Earth**; sequel, browser, and companion windows are excluded. If multiple matching game windows are open, close the extra ones.
 - Legacy exclusive fullscreen or minimized DirectDraw windows may produce blank/blocked captures. Use windowed mode or import a screenshot taken by the game/Windows. The companion does not fall back to recording the entire desktop.
 - The English language model is bundled in the executable. No language download, cloud OCR, screenshot upload, or game memory injection is required.
-- Version 0.1.1 enlarges small text and reads kills/losses using their column positions, including the full six-column Military layout. A detected Military screen opens for review even when some rows or numbers are unreadable; missing values stay blank for manual entry.
+- Version 0.1.2 crops and enlarges names separately, compares several OCR passes, and trims blank space around numeric glyphs. Kills/losses are located by column position, including the full six-column Military layout. A detected Military screen opens for review even when some rows or numbers are unreadable; missing values stay blank for manual entry.
 - OCR still makes mistakes in small text, stylized names, color bars, photos, and non-English interfaces. The supplied angled phone photo can detect the Military headings but cannot reliably provide every player row. Use a native screenshot and check every number before submission.
-- Only exact normalized names are mapped automatically. Unknown or misspelled names stay unassigned. Names such as `???????` require you to select the correct ladder player; the companion does not guess an identity.
+- Only unique exact normalized names are mapped automatically; conflicting readings remain unassigned. Similar names can show a possible ladder match that you must select yourself. Names such as `???????` require you to select the correct ladder player; the companion does not guess an identity.
 - This version reads post-game images. Empire Earth save/replay parsing is a separate integration; `.ees` files are not imported as military statistics in this release.
 
 ## Local data and connection safety
@@ -45,7 +45,7 @@ npm run build
 `npm run dist` is an alias for `npm run build`. The portable executable is written to:
 
 ```text
-companion/dist/Empire-Earth-Companion-0.1.1.exe
+companion/dist/Empire-Earth-Companion-0.1.2.exe
 ```
 
 Electron and its build dependencies are pinned in `package-lock.json`. The English OCR model and worker/WASM files are included in the package; only the first development/package setup requires network access.

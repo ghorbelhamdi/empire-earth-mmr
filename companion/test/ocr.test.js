@@ -2,8 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PNG } = require('pngjs');
-const { recognizeNumber, readMilitary } = require('../src/lib/ocr');
-const { readImage, prepareRegion, prepareForOCR } = require('../src/lib/image');
+const { recognizeNumber, recognizeName, readMilitary } = require('../src/lib/ocr');
+const { readImage, prepareRegion, prepareForOCR, trimInk } = require('../src/lib/image');
 
 test('cropped glyph preprocessing removes colored pixels, scales and adds white padding', () => {
   const source = new PNG({ width: 3, height: 1 });
@@ -22,6 +22,38 @@ test('numeric OCR uses a second crop for blanks and keeps zero valid', async () 
   assert.equal(await recognizeNumber(worker, [Buffer.alloc(1), Buffer.alloc(1)]), 0);
   assert.equal(count, 2); assert.equal(settings[0].tessedit_pageseg_mode, '7');
   assert.equal(settings[0].tessedit_char_whitelist, '0123456789');
+});
+
+test('tight ink crops retain separated digits and return null for a blank cell', () => {
+  const source = new PNG({ width: 80, height: 30 }); source.data.fill(255);
+  for (const x of [35, 45]) for (let y = 10; y <= 20; y++) {
+    const offset = (y * source.width + x) * 4;
+    source.data[offset] = source.data[offset + 1] = source.data[offset + 2] = 0;
+  }
+  const trimmed = PNG.sync.read(trimInk(PNG.sync.write(source), 10));
+  assert.equal(trimmed.width, 31); assert.equal(trimmed.height, 31);
+  assert.equal(trimmed.data[(10 * trimmed.width + 10) * 4], 0);
+  assert.equal(trimmed.data[(10 * trimmed.width + 20) * 4], 0);
+  source.data.fill(255); assert.equal(trimInk(PNG.sync.write(source)), null);
+});
+
+test('tight numeric variants use word segmentation and a stricter confidence threshold', async () => {
+  const settings = []; let reads = 0;
+  const worker = { setParameters: async value => settings.push(value), recognize: async () => ({ data: { text: '10', confidence: reads++ ? 94 : 70 } }) };
+  assert.equal(await recognizeNumber(worker, [null, { buffer: Buffer.alloc(1), psm: '8', minConfidence: 80 }, { buffer: Buffer.alloc(1), psm: '8', minConfidence: 80 }]), 10);
+  assert.equal(reads, 2); assert.equal(settings[0].tessedit_pageseg_mode, '8');
+});
+
+test('zoomed name recognition clears numeric whitelist and preserves alternative readings', async () => {
+  const source = new PNG({ width: 10, height: 10 }); source.data.fill(0);
+  for (let x = 3; x < 7; x++) for (let y = 3; y < 7; y++) {
+    const offset = (y * source.width + x) * 4; source.data[offset] = source.data[offset + 1] = source.data[offset + 2] = source.data[offset + 3] = 255;
+  }
+  const settings = []; let reads = 0;
+  const worker = { setParameters: async value => settings.push(value), recognize: async () => ({ data: { text: reads++ ? 'De3ech' : 'Dedech', confidence: reads > 1 ? 85 : 25 } }) };
+  const result = await recognizeName(worker, source, { left: 0, top: 0, width: 10, height: 10 }, 'raw name');
+  assert.equal(result.text, 'De3ech'); assert.ok(result.candidates.includes('Dedech'));
+  assert.equal(reads, 5); assert.ok(settings.every(value => value.tessedit_char_whitelist === ''));
 });
 test('unreadable, low-confidence and failed numeric crops stay blank instead of zero', async () => {
   for (const data of [{ text: 'O', confidence: 90 }, { text: '3', confidence: 10 }, { text: '1000001', confidence: 96 }, { text: '', confidence: 0 }]) {

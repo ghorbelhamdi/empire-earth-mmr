@@ -1,23 +1,35 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const api = (channel, value) => window.companion.invoke(channel, value);
-let state, previewReady = false, actionBusy = false, saveTimer;
+let state, previewReady = false, actionBusy = false, connectionBusy = false, connectionFailed = false, saveTimer, zoomLevel = 2, imageDrag = null;
 function showError(error) { $('error').textContent = error.message || String(error); $('error').hidden = false; }
 function clearError() { $('error').hidden = true; }
 function updateControls() {
   if (!state) return;
   const blocked = actionBusy || state.busy || state.watching;
   const locked = state.locked || Boolean(state.draft.result);
-  for (const id of ['capture', 'import', 'add-player', 'winner', 'confirmed']) $(id).disabled = blocked || locked;
+  for (const id of ['capture', 'import']) $(id).disabled = blocked || locked;
+  for (const id of ['add-player', 'winner', 'confirmed']) $(id).disabled = blocked || locked || connectionBusy;
   $('add-player').disabled ||= state.draft.rows.length >= 10;
-  $('watch').disabled = !state.watching && (blocked || locked || state.draft.rows.length > 0 || Boolean(state.draft.evidence));
-  $('watch').textContent = state.watching ? '■ Stop watching' : '◉ Watch for game';
+  const watch = window.companionUI.watchState(state, actionBusy);
+  $('watch').disabled = watch.disabled;
+  $('watch').textContent = watch.label;
+  $('watch-hint').textContent = watch.hint;
   $('new-match').disabled = blocked;
-  $('connect').disabled = blocked;
-  $('preview-button').disabled = blocked || Boolean(state.draft.result) || !state.players.length || !state.draft.stats_confirmed;
-  $('submit').disabled = blocked || Boolean(state.draft.result) || (!state.locked && (!previewReady || !state.draft.stats_confirmed));
+  $('connect').disabled = actionBusy || connectionBusy;
+  $('clear-token').disabled = actionBusy || connectionBusy || !state.hasToken;
+  $('zoom-image').disabled = !state.screenshot;
+  $('reread-image').disabled = !state.screenshot || blocked || locked;
+  $('image-tools').hidden = !state.screenshot;
+  $('connect').textContent = connectionBusy ? 'Connecting…' : 'Save & connect';
+  const connection = window.companionUI.connectionState(state, connectionBusy, connectionFailed);
+  $('connection-status').textContent = connection.status;
+  $('token-status').textContent = connection.tokenNote;
+  $('token').placeholder = connection.tokenPlaceholder;
+  $('preview-button').disabled = blocked || connectionBusy || Boolean(state.draft.result) || !state.players.length || !state.draft.stats_confirmed;
+  $('submit').disabled = blocked || connectionBusy || Boolean(state.draft.result) || (!state.locked && (!previewReady || !state.draft.stats_confirmed));
   $('submit').textContent = state.locked && !state.draft.result ? 'Retry saved submission →' : 'Submit for approval →';
-  document.querySelectorAll('#players-body input, #players-body select, #players-body button').forEach(element => { element.disabled = blocked || locked; });
+  document.querySelectorAll('#players-body input, #players-body select, #players-body button').forEach(element => { element.disabled = blocked || locked || connectionBusy; });
   $('status-bar').classList.toggle('watching', state.watching);
 }
 function setStatus(value) {
@@ -26,6 +38,24 @@ function setStatus(value) {
   updateControls();
 }
 function option(value, label) { const result = document.createElement('option'); result.value = value; result.textContent = label; return result; }
+function applyZoom(level) {
+  zoomLevel = level;
+  const image = $('zoomed-image');
+  const width = image.naturalWidth || $('evidence-image').naturalWidth;
+  const height = image.naturalHeight || $('evidence-image').naturalHeight;
+  if (width && height) { image.width = Math.round(width * level); image.height = Math.round(height * level); }
+  for (const [id, value] of [['zoom-100', 1], ['zoom-200', 2], ['zoom-400', 4]]) $(id).setAttribute('aria-pressed', String(value === level));
+  $('zoom-level').textContent = `${Math.round(level * 100)}%`;
+}
+function openImageZoom() {
+  if (!state.screenshot) return;
+  const image = $('zoomed-image');
+  image.onload = () => applyZoom(zoomLevel);
+  image.src = state.screenshot;
+  applyZoom(2);
+  $('image-dialog').showModal();
+  $('image-viewport').scrollLeft = 0; $('image-viewport').scrollTop = 0;
+}
 function edited() {
   state.draft.stats_confirmed = false;
   $('confirmed').checked = false;
@@ -49,9 +79,12 @@ function renderRows() {
     state.players.forEach(player => select.append(option(player.id, player.name)));
     if (row.player_id && !state.players.some(player => player.id === row.player_id)) select.append(option(row.player_id, `Player #${row.player_id} · reconnect`));
     select.value = row.player_id || '';
-    select.addEventListener('change', () => { row.player_id = select.value ? Number(select.value) : null; edited(); });
+    let suggestion = null;
+    select.addEventListener('change', () => { row.player_id = select.value ? Number(select.value) : null; if (suggestion) suggestion.hidden = Boolean(row.player_id); edited(); });
     playerCell.append(select);
-    if (row.ocr_name) { const label = document.createElement('div'); label.className = 'ocr-name'; label.textContent = `Read: ${row.ocr_name}`; playerCell.append(label); }
+    if (row.ocr_name) { const label = document.createElement('div'); label.className = 'ocr-name'; label.textContent = `Read: ${row.ocr_name}`; if (row.ocr_name_raw && row.ocr_name_raw !== row.ocr_name) label.setAttribute('title', `Initial OCR: ${row.ocr_name_raw}`); playerCell.append(label); }
+    const possible = state.players.find(player => player.id === row.suggested_player_id);
+    if (possible && !row.player_id) { suggestion = document.createElement('div'); suggestion.className = 'ocr-name'; suggestion.textContent = `Possible match: ${possible.name}. Select this player in the list to confirm.`; playerCell.append(suggestion); }
     tr.append(playerCell);
     const teamCell = document.createElement('td');
     const team = document.createElement('select'); team.setAttribute('aria-label', `Team for row ${index + 1}`);
@@ -72,9 +105,7 @@ function renderRows() {
 function render(next) {
   state = next;
   $('server').value = state.server;
-  $('token').placeholder = state.hasToken ? 'Saved securely · leave blank to keep' : 'Paste the token from your administrator';
   $('version').textContent = `v${state.version}`;
-  $('connection-status').textContent = state.players.length ? `${state.players.length} players connected` : state.hasToken ? 'Token saved · connect to load players' : 'Setup required';
   if (!state.hasToken) $('connection').open = true;
   $('winner').value = state.draft.winner || '';
   $('confirmed').checked = state.draft.stats_confirmed === true;
@@ -96,17 +127,40 @@ async function action(callback) {
   catch (error) { showError(error); }
   finally { actionBusy = false; updateControls(); }
 }
-$('connect').addEventListener('click', () => action(async () => {
-  await persist();
-  previewReady = false; $('preview').hidden = true;
-  render(await api('settings:save', { server: $('server').value, token: $('token').value }));
-  $('token').value = '';
-  render(await api('players:load')); $('connection').open = false;
-}));
-$('clear-token').addEventListener('click', () => action(async () => { render(await api('settings:save', { server: state.server, clearToken: true })); $('token').value = ''; }));
+async function connectLadder({ saveSettings = false } = {}) {
+  if (connectionBusy) return;
+  clearError(); connectionBusy = true; connectionFailed = false; updateControls();
+  let savedSettings = !saveSettings;
+  try {
+    if (saveSettings) {
+      if (!state.busy && !state.watching) await persist();
+      previewReady = false; $('preview').hidden = true;
+      render(await api('settings:save', { server: $('server').value, token: $('token').value }));
+      savedSettings = true;
+      $('token').value = '';
+    }
+    render(await api('players:load'));
+    if (saveSettings) $('connection').open = false;
+  } catch (error) {
+    connectionFailed = true; $('connection').open = true;
+    showError(new Error(`${savedSettings && state.hasToken ? 'Your token is saved on this PC. ' : ''}${error.message}`));
+  } finally { connectionBusy = false; updateControls(); }
+}
+$('connect').addEventListener('click', () => connectLadder({ saveSettings: true }));
+$('clear-token').addEventListener('click', () => action(async () => { render(await api('settings:save', { server: state.server, clearToken: true })); $('token').value = ''; connectionFailed = false; }));
 $('watch').addEventListener('click', () => {
   if (state.watching) { api('watch:stop').then(value => { Object.assign(state, value); updateControls(); }).catch(showError); return; }
-  action(async () => { await persist(); Object.assign(state, await api('watch:start')); updateControls(); });
+  const startNew = window.companionUI.watchState(state).startNew;
+  action(async () => {
+    await persist();
+    if (startNew) {
+      const previousId = state.draft.submission_id;
+      render(await api('draft:new'));
+      if (state.draft.submission_id === previousId) return;
+      previewReady = false; $('preview').hidden = true;
+    }
+    Object.assign(state, await api('watch:start')); updateControls();
+  });
 });
 for (const [id, channel] of [['capture', 'capture:game'], ['import', 'capture:import']]) $(id).addEventListener('click', () => action(async () => { await persist(); const next = await api(channel); previewReady = false; $('preview').hidden = true; render(next); }));
 $('new-match').addEventListener('click', () => action(async () => { await persist(); render(await api('draft:new')); previewReady = false; $('preview').hidden = true; }));
@@ -125,6 +179,27 @@ $('submit').addEventListener('click', () => action(async () => {
   finally { render(await api('state:get')); }
 }));
 $('open-captures').addEventListener('click', () => action(() => api('captures:open')));
+$('zoom-image').addEventListener('click', openImageZoom);
+$('reread-image').addEventListener('click', () => action(async () => {
+  await persist();
+  const next = await api('capture:reread');
+  previewReady = false; $('preview').hidden = true; render(next);
+}));
+$('zoom-close').addEventListener('click', () => $('image-dialog').close());
+for (const [id, level] of [['zoom-100', 1], ['zoom-200', 2], ['zoom-400', 4]]) $(id).addEventListener('click', () => applyZoom(level));
+$('image-dialog').addEventListener('close', () => { imageDrag = null; $('zoom-image').focus(); });
+$('image-dialog').addEventListener('click', event => { if (event.target === $('image-dialog')) $('image-dialog').close(); });
+$('image-viewport').addEventListener('pointerdown', event => {
+  if (event.button !== 0) return;
+  imageDrag = { x: event.clientX, y: event.clientY, left: $('image-viewport').scrollLeft, top: $('image-viewport').scrollTop };
+  $('image-viewport').setPointerCapture(event.pointerId); $('image-viewport').focus(); event.preventDefault();
+});
+$('image-viewport').addEventListener('pointermove', event => {
+  if (!imageDrag) return;
+  $('image-viewport').scrollLeft = imageDrag.left + imageDrag.x - event.clientX;
+  $('image-viewport').scrollTop = imageDrag.top + imageDrag.y - event.clientY;
+});
+for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('image-viewport').addEventListener(event, () => { imageDrag = null; });
 window.companion.onStatus(setStatus);
 window.companion.onDraft(next => { previewReady = false; $('preview').hidden = true; render(next); });
-api('state:get').then(render).catch(showError);
+api('state:get').then(async next => { render(next); if (next.hasToken) await connectLadder(); }).catch(showError);

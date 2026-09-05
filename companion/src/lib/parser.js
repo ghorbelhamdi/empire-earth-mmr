@@ -1,5 +1,5 @@
 'use strict';
-const normalizeName = value => String(value).normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g, '');
+const { normalizeName, matchPlayer, identifyName } = require('./names');
 const cleanHeader = value => String(value).toLowerCase().replace(/[^a-z]/g, '');
 const centerX = word => (word.bbox.x0 + word.bbox.x1) / 2;
 const centerY = word => (word.bbox.y0 + word.bbox.y1) / 2;
@@ -62,12 +62,8 @@ function findMilitaryLayout(data) {
   }
   return { killed, lost, spacing, headerY, headerHeight, nameLeft, nameRight, rows };
 }
-function matchPlayer(name, players) {
-  const normalized = normalizeName(name); if (!normalized) return null;
-  const matches = players.filter(player => normalizeName(player.name) === normalized); return matches.length === 1 ? matches[0].id : null;
-}
 function finishMilitaryResult(result, players = []) {
-  result.rows = result.rows.map(row => ({ ...row, player_id: matchPlayer(row.ocr_name, players), team: '' }));
+  result.rows = result.rows.map(row => ({ ...row, ...identifyName(row, players), team: '' }));
   const teams = [...new Set(result.rows.map(row => row.detected_team).filter(Boolean))];
   if (teams.length === 2) result.rows.forEach(row => { row.team = row.detected_team === teams[0] ? 'team1' : row.detected_team === teams[1] ? 'team2' : ''; });
   const complete = result.rows.filter(row => Number.isSafeInteger(row.units_killed) && Number.isSafeInteger(row.units_lost)).length;

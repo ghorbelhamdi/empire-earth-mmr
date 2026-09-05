@@ -515,7 +515,7 @@ def companion_download_url():
     configured = os.environ.get('COMPANION_DOWNLOAD_URL')
     if configured:
         return configured
-    filename = 'downloads/Empire-Earth-Companion-0.1.1.exe'
+    filename = 'downloads/Empire-Earth-Companion-0.1.2.exe'
     if os.path.isfile(os.path.join(app.static_folder, filename)):
         return url_for('static', filename=filename)
     return None
