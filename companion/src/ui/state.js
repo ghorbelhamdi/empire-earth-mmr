@@ -12,10 +12,11 @@
     return { disabled: false, label: '◉ Watch for game', hint: 'Capture works before you connect to the ladder. Keep the game window visible.', startNew: false };
   }
   function connectionState(state, busy = false, failed = false) {
+    const unreadable = Boolean(state.hasSavedToken && !state.hasToken);
     return {
-      status: busy ? 'Connecting…' : failed ? (state.hasToken ? 'Token saved · connection failed' : 'Connection failed') : state.players.length ? `${state.players.length} players connected` : state.hasToken ? 'Token saved on this PC' : 'Setup required',
-      tokenNote: state.hasToken ? 'Token saved securely on this PC. Leave the field empty to keep it, or paste a replacement.' : 'No token saved yet. Paste a device token, then choose Save & connect.',
-      tokenPlaceholder: state.hasToken ? 'Token saved · paste only to replace' : 'Paste the token from your administrator'
+      status: busy ? 'Connecting…' : unreadable ? 'Saved token needs replacement' : failed ? (state.hasToken ? 'Token saved · connection failed' : 'Connection failed') : state.players.length ? `${state.players.length} players connected` : state.hasToken ? 'Token saved on this PC' : 'Setup required',
+      tokenNote: unreadable ? 'A token is saved on this PC, but Windows could not unlock it. Paste a replacement or choose Forget token.' : state.hasToken ? 'Token saved securely on this PC. Leave the field empty to keep it, or paste a replacement.' : 'No token saved yet. Paste a device token, then choose Save & connect.',
+      tokenPlaceholder: unreadable ? 'Saved token unavailable · paste a replacement' : state.hasToken ? 'Token saved · paste only to replace' : 'Paste the token from your administrator'
     };
   }
   return { watchState, connectionState };

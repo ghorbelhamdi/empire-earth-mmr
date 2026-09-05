@@ -1,23 +1,23 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const api = (channel, value) => window.companion.invoke(channel, value);
-let state, previewReady = false, actionBusy = false, connectionBusy = false, connectionFailed = false, saveTimer, zoomLevel = 2, imageDrag = null;
+let state, previewReady = false, actionBusy = false, connectionBusy = false, settingsSaving = false, connectionFailed = false, saveTimer, zoomLevel = 2, imageDrag = null;
 function showError(error) { $('error').textContent = error.message || String(error); $('error').hidden = false; }
 function clearError() { $('error').hidden = true; }
 function updateControls() {
   if (!state) return;
-  const blocked = actionBusy || state.busy || state.watching;
+  const blocked = actionBusy || settingsSaving || state.busy || state.watching;
   const locked = state.locked || Boolean(state.draft.result);
   for (const id of ['capture', 'import']) $(id).disabled = blocked || locked;
   for (const id of ['add-player', 'winner', 'confirmed']) $(id).disabled = blocked || locked || connectionBusy;
   $('add-player').disabled ||= state.draft.rows.length >= 10;
-  const watch = window.companionUI.watchState(state, actionBusy);
+  const watch = window.companionUI.watchState(state, actionBusy || settingsSaving);
   $('watch').disabled = watch.disabled;
   $('watch').textContent = watch.label;
   $('watch-hint').textContent = watch.hint;
   $('new-match').disabled = blocked;
   $('connect').disabled = actionBusy || connectionBusy;
-  $('clear-token').disabled = actionBusy || connectionBusy || !state.hasToken;
+  $('clear-token').disabled = actionBusy || connectionBusy || !(state.hasSavedToken || state.hasToken);
   $('zoom-image').disabled = !state.screenshot;
   $('reread-image').disabled = !state.screenshot || blocked || locked;
   $('image-tools').hidden = !state.screenshot;
@@ -121,15 +121,15 @@ function render(next) {
   renderRows(); setStatus(state); updateControls();
 }
 async function action(callback) {
-  if (actionBusy) return;
+  if (actionBusy || settingsSaving) return;
   clearError(); actionBusy = true; updateControls();
   try { await callback(); }
   catch (error) { showError(error); }
   finally { actionBusy = false; updateControls(); }
 }
 async function connectLadder({ saveSettings = false } = {}) {
-  if (connectionBusy) return;
-  clearError(); connectionBusy = true; connectionFailed = false; updateControls();
+  if (connectionBusy || actionBusy) return;
+  clearError(); connectionBusy = true; settingsSaving = saveSettings; connectionFailed = false; updateControls();
   let savedSettings = !saveSettings;
   try {
     if (saveSettings) {
@@ -138,13 +138,14 @@ async function connectLadder({ saveSettings = false } = {}) {
       render(await api('settings:save', { server: $('server').value, token: $('token').value }));
       savedSettings = true;
       $('token').value = '';
+      settingsSaving = false; updateControls();
     }
     render(await api('players:load'));
     if (saveSettings) $('connection').open = false;
   } catch (error) {
     connectionFailed = true; $('connection').open = true;
     showError(new Error(`${savedSettings && state.hasToken ? 'Your token is saved on this PC. ' : ''}${error.message}`));
-  } finally { connectionBusy = false; updateControls(); }
+  } finally { connectionBusy = false; settingsSaving = false; updateControls(); }
 }
 $('connect').addEventListener('click', () => connectLadder({ saveSettings: true }));
 $('clear-token').addEventListener('click', () => action(async () => { render(await api('settings:save', { server: state.server, clearToken: true })); $('token').value = ''; connectionFailed = false; }));

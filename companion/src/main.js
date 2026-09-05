@@ -12,7 +12,7 @@ const { readMilitary } = require('./lib/ocr');
 
 const DEFAULT_SERVER = 'https://empire-mmr.duckdns.org';
 let mainWindow, captureWindow, config = { server: DEFAULT_SERVER }, token = '', players = [], draft = newDraft();
-let watching = false, watchTimer, watchGeneration = 0, busy = false, submitting = false, workerPromise;
+let watching = false, watchTimer, watchGeneration = 0, busy = false, submitting = false, settingsSaving = false, workerPromise;
 let status = 'Connect your ladder, then capture a Military screen or enter a match.';
 let dataDir;
 const uiFile = path.join(__dirname, 'ui', 'index.html');
@@ -56,7 +56,7 @@ async function publicState() {
     try { screenshot = 'data:image/png;base64,' + (await fs.readFile(draft.screenshotPath)).toString('base64'); } catch { /* Draft remains usable if the local image was removed. */ }
   }
   const { pendingPayload, screenshotPath, ...publicDraft } = draft;
-  return { server: config.server, hasToken: Boolean(token), players, draft: publicDraft, locked: Boolean(pendingPayload), screenshot, watching, busy, status, version: app.getVersion() };
+  return { server: config.server, hasToken: Boolean(token), hasSavedToken: Boolean(config.encryptedToken), players, draft: publicDraft, locked: Boolean(pendingPayload), screenshot, watching, busy, status, version: app.getVersion() };
 }
 function stopWatch() {
   watching = false;
@@ -133,6 +133,7 @@ async function acceptScreenshot(buffer, result) {
 
 async function takeCapture({ manual = false, imported = null } = {}) {
   ensureEditable();
+  if (settingsSaving) throw new Error('Wait for connection settings to finish saving.');
   if (busy) throw new Error('A capture is already being read.');
   busy = true;
   const generation = watchGeneration;
@@ -156,7 +157,7 @@ async function takeCapture({ manual = false, imported = null } = {}) {
 }
 async function watchTick() {
   if (!watching) return;
-  await takeCapture();
+  if (!settingsSaving) await takeCapture();
   if (watching) watchTimer = setTimeout(watchTick, 8000);
 }
 
@@ -168,7 +169,6 @@ const handlers = {
     const serverChanged = server !== config.server;
     if (serverChanged && draft.pendingPayload && !draft.result) throw new Error('Retry the pending submission before changing servers.');
     if (serverChanged && busy) throw new Error('Wait for the current capture to finish before changing the server.');
-    if (serverChanged) stopWatch();
     if (!value.clearToken && !serverChanged && !String(value.token || '').trim() && config.encryptedToken && !token) {
       throw new Error('A token is saved, but Windows could not unlock it. Paste a replacement token or use Forget token. Your saved token has not been changed.');
     }
@@ -177,20 +177,28 @@ const handlers = {
     if (nextToken.length > 4096 || /[\r\n]/.test(nextToken)) throw new Error('Invalid token.');
     if (nextToken && !safeStorage.isEncryptionAvailable()) throw new Error('Windows secure credential storage is unavailable. The token was not saved.');
     const nextConfig = { server, encryptedToken: nextToken ? safeStorage.encryptString(nextToken).toString('base64') : null };
-    await writeJSON('settings.json', nextConfig);
-    config = nextConfig;
-    token = nextToken;
-    if (serverChanged && !draft.pendingPayload) {
-      draft.rows = draft.rows.map(row => ({ ...row, player_id: null }));
-      draft.stats_confirmed = false;
-      await saveDraft();
+    settingsSaving = true;
+    try {
+      await writeJSON('settings.json', nextConfig);
+      config = nextConfig;
+      token = nextToken;
+      players = [];
+      if (serverChanged) stopWatch();
+      updateStatus(token ? 'Connection saved. Load players to check your token.' : 'Enter a companion token from the ladder administrator.');
+      if (serverChanged && !draft.pendingPayload) {
+        draft.rows = draft.rows.map(row => ({ ...row, player_id: null, suggested_player_id: null, suggested_player_name: null }));
+        draft.stats_confirmed = false;
+        await saveDraft();
+      }
+      return await publicState();
+    } finally {
+      settingsSaving = false;
     }
-    players = [];
-    updateStatus(token ? 'Connection saved. Load players to check your token.' : 'Enter a companion token from the ladder administrator.');
-    return publicState();
   },
   'players:load': async () => {
+    const requestedConfig = config;
     const [data, metadata] = await Promise.all([apiRequest(config.server, token, '/api/v1/players'), apiRequest(config.server, token, '/api/v1/companion')]);
+    if (requestedConfig !== config) throw new Error('Connection settings changed. Connect again to load the current players.');
     if (!Array.isArray(data.players) || data.players.some(player => !Number.isInteger(player.id) || typeof player.name !== 'string')) throw new Error('Unexpected player list from server.');
     players = data.players;
     updateStatus(`Connected · ${players.length} ladder players loaded`);
@@ -308,7 +316,10 @@ app.whenReady().then(async () => {
   mainWindow.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, async (event, value) => {
     if (event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || event.senderFrame.url !== pathToFileURL(uiFile).href) throw new Error('Untrusted request.');
-    try { return { ok: true, value: await handler(value) }; }
+    try {
+      if (settingsSaving && !['state:get', 'watch:stop', 'captures:open'].includes(channel)) throw new Error('Wait for connection settings to finish saving.');
+      return { ok: true, value: await handler(value) };
+    }
     catch (error) { return { ok: false, error: error.message }; }
   });
   await mainWindow.loadFile(uiFile);

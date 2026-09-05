@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const helpers = require('../src/ui/state');
-const initialState = overrides => ({ server: 'https://ladder.example', hasToken: false, players: [], version: '0.1.2', status: 'Ready', watching: false, busy: false, locked: false, screenshot: null,
+const initialState = overrides => ({ server: 'https://ladder.example', hasToken: false, hasSavedToken: false, players: [], version: '0.1.2', status: 'Ready', watching: false, busy: false, locked: false, screenshot: null,
   draft: { submission_id: 'original-draft', rows: [], winner: '', stats_confirmed: false, evidence: null, result: null }, ...overrides });
 const settled = () => new Promise(resolve => setImmediate(resolve));
 function rendererHarness(initial, options = {}) {
@@ -33,10 +33,17 @@ function rendererHarness(initial, options = {}) {
       current.players = [{ id: 1, name: 'Alice', mmr: 1000 }]; return structuredClone(current);
     }
     if (channel === 'settings:save') {
-      current.hasToken = value.clearToken ? false : Boolean(value.token || current.hasToken); current.server = value.server;
-      return structuredClone(current);
+      const save = () => {
+        current.hasToken = value.clearToken ? false : Boolean(value.token || current.hasToken);
+        current.hasSavedToken = current.hasToken; current.server = value.server;
+        return structuredClone(current);
+      };
+      return options.saveSettings ? options.saveSettings(save) : save();
     }
-    if (channel === 'draft:save') { current.draft = { ...current.draft, ...JSON.parse(JSON.stringify(value)) }; return { saved: true }; }
+    if (channel === 'draft:save') {
+      const save = () => { current.draft = { ...current.draft, ...JSON.parse(JSON.stringify(value)) }; return { saved: true }; };
+      return options.saveDraft ? options.saveDraft(save) : save();
+    }
     if (channel === 'draft:new') {
       if (!options.cancelNew) current.draft = { ...initialState().draft, submission_id: 'new-draft' };
       return structuredClone(current);
@@ -64,6 +71,57 @@ test('a failed reconnect keeps saved-token status and a useful retry message', a
   assert.match(ui.element('error').textContent, /token is saved.*Server is offline/);
   assert.equal(ui.element('watch').disabled, false);
   assert.equal(ui.element('connect').disabled, false);
+});
+
+test('an unreadable saved token can be forgotten without attempting an authenticated reconnect', async () => {
+  const ui = rendererHarness(initialState({ hasSavedToken: true })); await settled();
+  assert.deepEqual(ui.calls.map(call => call.channel), ['state:get']);
+  assert.match(ui.element('connection-status').textContent, /Saved token needs replacement/);
+  assert.match(ui.element('token-status').textContent, /Windows could not unlock it.*Forget token/);
+  assert.equal(ui.element('clear-token').disabled, false);
+  assert.equal(ui.element('token').value, '');
+  ui.element('clear-token').click(); await settled();
+  assert.equal(ui.calls.at(-1).value.clearToken, true);
+  assert.equal(ui.current().hasSavedToken, false);
+  assert.equal(ui.element('clear-token').disabled, true);
+  assert.match(ui.element('token-status').textContent, /No token saved yet/);
+});
+
+test('explicit settings save blocks new draft actions until persistence finishes, then permits offline capture during connection', async () => {
+  let finishDraft, finishSettings, finishPlayers;
+  const ui = rendererHarness(initialState({ screenshot: 'data:image/png;base64,local-test-image' }), {
+    saveDraft: save => new Promise(resolve => { finishDraft = () => resolve(save()); }),
+    saveSettings: save => new Promise(resolve => { finishSettings = () => resolve(save()); }),
+    loadPlayers: current => new Promise(resolve => { finishPlayers = () => resolve(current()); })
+  }); await settled();
+  ui.element('server').value = 'https://another-ladder.example';
+  ui.element('token').value = 'dummy-replacement-token';
+  ui.element('connect').click(); await settled();
+  const actions = ['watch', 'capture', 'import', 'new-match', 'reread-image', 'add-player', 'winner', 'confirmed'];
+  for (const id of actions) { assert.equal(ui.element(id).disabled, true, `${id} must wait for draft persistence`); ui.element(id).click(); }
+  assert.deepEqual(ui.calls.map(call => call.channel), ['state:get', 'draft:save']);
+  finishDraft(); await settled();
+  for (const id of actions) { assert.equal(ui.element(id).disabled, true, `${id} must wait for settings persistence`); ui.element(id).click(); }
+  assert.deepEqual(ui.calls.map(call => call.channel), ['state:get', 'draft:save', 'settings:save']);
+  finishSettings(); await settled();
+  for (const id of ['watch', 'capture', 'import', 'new-match', 'reread-image']) assert.equal(ui.element(id).disabled, false, `${id} is local and need not wait for the network`);
+  assert.equal(ui.element('connect').disabled, true);
+  assert.equal(ui.element('token').value, '');
+  finishPlayers(); await settled();
+  assert.equal(ui.element('connect').disabled, false);
+});
+
+test('failed settings persistence restores draft actions and retains the typed replacement', async () => {
+  const ui = rendererHarness(initialState(), { saveSettings: async () => { throw new Error('Cannot save settings'); } }); await settled();
+  ui.element('token').value = 'dummy-replacement-token';
+  ui.element('connect').click(); await settled();
+  assert.equal(ui.element('watch').disabled, false);
+  assert.equal(ui.element('capture').disabled, false);
+  assert.equal(ui.element('new-match').disabled, false);
+  assert.equal(ui.element('connect').disabled, false);
+  assert.equal(ui.element('token').value, 'dummy-replacement-token');
+  assert.match(ui.element('error').textContent, /Cannot save settings/);
+  assert.doesNotMatch(ui.element('error').textContent, /dummy-replacement-token/);
 });
 test('Watch next game requires the existing draft confirmation and respects cancellation', async () => {
   const draft = { ...initialState().draft, rows: [{ player_id: 1, team: 'team1', units_killed: 3, units_lost: 7 }] };
