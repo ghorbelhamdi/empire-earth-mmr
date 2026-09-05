@@ -4,11 +4,11 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
-const { createWorker, PSM } = require('tesseract.js');
+const { createWorker } = require('tesseract.js');
 const { normalizeServer, apiRequest } = require('./lib/client');
 const { newDraft, buildPayload, submitDraft } = require('./lib/draft');
-const { parseMilitary, isEmpireEarthWindow } = require('./lib/parser');
-const { prepareForOCR } = require('./lib/image');
+const { isEmpireEarthWindow } = require('./lib/parser');
+const { readMilitary } = require('./lib/ocr');
 
 const DEFAULT_SERVER = 'https://empire-mmr.duckdns.org';
 let mainWindow, captureWindow, config = { server: DEFAULT_SERVER }, token = '', players = [], draft = newDraft();
@@ -16,6 +16,10 @@ let watching = false, watchTimer, watchGeneration = 0, busy = false, submitting 
 let status = 'Connect your ladder, then capture a Military screen or enter a match.';
 let dataDir;
 const uiFile = path.join(__dirname, 'ui', 'index.html');
+const smokeWatchImage = process.argv.find(argument => argument.startsWith('--smoke-watch-image='));
+const smokeWatch = process.argv.includes('--smoke-test') && (process.argv.includes('--smoke-watch-game') || Boolean(smokeWatchImage));
+// Diagnostic runs must not load or modify a player's real token and match draft.
+if (process.argv.includes('--smoke-test')) app.setPath('userData', path.join(app.getPath('temp'), 'empire-earth-companion-smoke'));
 if (!app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => { if (mainWindow?.isMinimized()) mainWindow.restore(); mainWindow?.focus(); });
 
@@ -63,14 +67,9 @@ async function ocr(buffer) {
     langPath: path.dirname(require.resolve('@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz')),
     cachePath: path.join(dataDir, 'ocr'), cacheMethod: 'none', gzip: true,
     logger: () => {}
-  }).then(async worker => { await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT }); return worker; }).catch(error => { workerPromise = null; throw error; });
+  }).catch(error => { workerPromise = null; throw error; });
   const worker = await workerPromise;
-  const enhanced = await worker.recognize(prepareForOCR(buffer), {}, { text: true, blocks: true });
-  const parsed = parseMilitary(enhanced.data, players);
-  if (parsed.isMilitary && parsed.rows.length >= 2) return parsed;
-  const original = await worker.recognize(buffer, {}, { text: true, blocks: true });
-  const fallback = parseMilitary(original.data, players);
-  return fallback.rows.length > parsed.rows.length || fallback.isMilitary && !parsed.isMilitary ? fallback : parsed;
+  return readMilitary(worker, buffer, players);
 }
 
 async function captureGameWindow(testSourceId = null) {
@@ -143,8 +142,10 @@ async function takeCapture({ manual = false, imported = null } = {}) {
       result = { rows: [], text: '', warning: 'The image is saved locally. OCR failed; enter its statistics manually.' };
     }
     if (!manual && (!watching || watchGeneration !== generation)) return;
-    if (manual || (result.isMilitary && result.rows.length >= 2)) await acceptScreenshot(buffer, result);
-    else updateStatus(result.isMilitary ? 'Military screen detected. Keep it visible, or capture now to enter values manually.' : 'Watching Empire Earth. Open the post-game Military tab when the match ends.');
+    // A recognized Military screen is useful even when OCR misses player rows.
+    // Keep the evidence and expose editable fields instead of silently polling it forever.
+    if (manual || result.isMilitary) await acceptScreenshot(buffer, result);
+    else updateStatus('Watching Empire Earth. Open the post-game Military tab when the match ends.');
   } catch (error) { updateStatus(error.message); if (manual) throw error; }
   finally { busy = false; updateStatus(status); }
 }
@@ -261,7 +262,7 @@ app.whenReady().then(async () => {
   }
   const savedDraft = await readJSON('draft.json', null);
   if (savedDraft && typeof savedDraft.submission_id === 'string' && Array.isArray(savedDraft.rows)) draft = savedDraft;
-  mainWindow = new BrowserWindow({ width: 1320, height: 940, minWidth: 1050, minHeight: 750, backgroundColor: '#0a0b0d', title: 'Empire Earth Companion',
+  mainWindow = new BrowserWindow({ show: !smokeWatch, width: 1320, height: 940, minWidth: 1050, minHeight: 750, backgroundColor: '#0a0b0d', title: 'Empire Earth Companion',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
   mainWindow.removeMenu();
   let closeReady = false;
@@ -284,13 +285,24 @@ app.whenReady().then(async () => {
   if (process.argv.includes('--smoke-test')) {
     await new Promise(resolve => setTimeout(resolve, 1500));
     const check = await mainWindow.webContents.executeJavaScript('({title: document.title, bridge: typeof window.companion, rows: document.querySelectorAll("#players-body tr").length, node: typeof require, text: document.body.innerText})');
+    if (smokeWatch) {
+      draft = newDraft(); watching = true;
+      await takeCapture(smokeWatchImage ? { imported: await fs.readFile(smokeWatchImage.slice('--smoke-watch-image='.length)) } : {});
+      check.watch = { detected: Boolean(draft.evidence), stopped: !watching, rows: draft.rows.map(row => ({ units_killed: row.units_killed, units_lost: row.units_lost })), confirmed: draft.stats_confirmed, winner: draft.winner, status };
+      for (let attempt = 0; attempt < 50; attempt++) {
+        check.watch.rendered = await mainWindow.webContents.executeJavaScript('({rows: document.querySelectorAll("#players-body tr").length, image: !document.querySelector("#evidence-image").hidden && document.querySelector("#evidence-image").complete && document.querySelector("#evidence-image").naturalWidth > 0, watching: document.querySelector("#watch").textContent.includes("Stop watching")})');
+        if (check.watch.rendered.rows === draft.rows.length && check.watch.rendered.image === Boolean(draft.evidence) && !check.watch.rendered.watching) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      stopWatch();
+    }
     if (process.argv.includes('--smoke-capture')) {
       mainWindow.setTitle('Empire Earth');
       try { check.captureBytes = (await captureGameWindow(mainWindow.getMediaSourceId())).length; } catch (error) { check.captureError = error.message; }
     }
     const ocrArgument = process.argv.find(argument => argument.startsWith('--smoke-ocr='));
     if (ocrArgument) {
-      try { const parsed = await ocr(await fs.readFile(ocrArgument.slice('--smoke-ocr='.length))); check.ocr = { military: parsed.isMilitary, rows: parsed.rows.length, warning: parsed.warning }; }
+      try { const parsed = await ocr(await fs.readFile(ocrArgument.slice('--smoke-ocr='.length))); check.ocr = { military: parsed.isMilitary, rows: parsed.rows.length, values: parsed.rows.map(row => ({ units_killed: row.units_killed, units_lost: row.units_lost })), warning: parsed.warning }; }
       catch (error) { check.ocrError = error.message; }
     }
     await fs.writeFile(path.join(process.cwd(), 'smoke-result.json'), JSON.stringify(check, null, 2));

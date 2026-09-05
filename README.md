@@ -22,7 +22,7 @@ Use Gunicorn behind an HTTPS reverse proxy in production. Existing deployments c
 
 The Windows companion lives in [`companion/`](companion/). It can watch the Empire Earth window, recognize the English Military screen using local OCR, import a screenshot, and accept corrected or manually entered statistics. A user maps every row to a ladder player and explicitly chooses teams and winner before previewing and submitting a match.
 
-The ladder's `/companion` page provides setup instructions. Admins create and revoke device tokens at `/admin/companion`. The portable build is served from `static/downloads/Empire-Earth-Companion-0.1.0.exe`; build it using the instructions in the companion directory and copy the resulting executable there. Build artifacts are ignored by Git.
+The ladder's `/companion` page provides setup instructions. Admins create and revoke device tokens at `/admin/companion`. The portable build is served from `static/downloads/Empire-Earth-Companion-0.1.1.exe`; build it using the instructions in the companion directory and copy the resulting executable there. Build artifacts are ignored by Git.
 
 Screenshots remain on the user's PC. The API receives reviewed military counts and capture metadata, not the image. A hash detects byte-identical screenshots but is not proof of a genuine result. Every companion submission requires admin approval even when automatic approval is enabled for web reports.
 

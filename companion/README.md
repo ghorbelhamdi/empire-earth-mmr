@@ -4,7 +4,7 @@ This companion supports the **original Empire Earth**, including the window titl
 
 ## Use it
 
-1. Run `Empire-Earth-Companion-0.1.0.exe` on Windows 10/11 x64. This is a portable, unsigned build; no administrator rights are required.
+1. Run `Empire-Earth-Companion-0.1.1.exe` on Windows 10/11 x64. This is a portable, unsigned build; no administrator rights are required.
 2. Ask your ladder administrator to create a device token on the ladder’s **Companion** page. Enter `https://empire-mmr.duckdns.org` and that token, then click **Connect ladder**.
 3. Click **Watch for game** before playing. At the end, open **Military** and keep **Units Killed** and **Units Lost** visible. The companion watches only the identified game window, runs English OCR locally, and stops when it finds a draft. Capture polling waits eight seconds after each OCR pass.
 4. Alternatively, choose **Capture now**, **Import image**, or **Add player** to enter the match manually.
@@ -17,7 +17,8 @@ All submissions start in the approval queue. Approval is required before the mat
 - The game must have a visible window titled **Empire Earth**; sequel, browser, and companion windows are excluded. If multiple matching game windows are open, close the extra ones.
 - Legacy exclusive fullscreen or minimized DirectDraw windows may produce blank/blocked captures. Use windowed mode or import a screenshot taken by the game/Windows. The companion does not fall back to recording the entire desktop.
 - The English language model is bundled in the executable. No language download, cloud OCR, screenshot upload, or game memory injection is required.
-- White-text preprocessing helps with the game’s colored background. OCR still makes mistakes in small text, stylized names, color bars, photos, and non-English interfaces. The supplied angled phone photo was tested: the Military headings can be detected after preprocessing, but its player rows cannot be reliably read. Such images remain available for manual entry; a native screenshot should be used for reliable OCR. A native post-game screenshot from the installed game still needs real-game acceptance testing.
+- Version 0.1.1 enlarges small text and reads kills/losses using their column positions, including the full six-column Military layout. A detected Military screen opens for review even when some rows or numbers are unreadable; missing values stay blank for manual entry.
+- OCR still makes mistakes in small text, stylized names, color bars, photos, and non-English interfaces. The supplied angled phone photo can detect the Military headings but cannot reliably provide every player row. Use a native screenshot and check every number before submission.
 - Only exact normalized names are mapped automatically. Unknown or misspelled names stay unassigned. Names such as `???????` require you to select the correct ladder player; the companion does not guess an identity.
 - This version reads post-game images. Empire Earth save/replay parsing is a separate integration; `.ees` files are not imported as military statistics in this release.
 
@@ -44,12 +45,12 @@ npm run build
 `npm run dist` is an alias for `npm run build`. The portable executable is written to:
 
 ```text
-companion/dist/Empire-Earth-Companion-0.1.0.exe
+companion/dist/Empire-Earth-Companion-0.1.1.exe
 ```
 
 Electron and its build dependencies are pinned in `package-lock.json`. The English OCR model and worker/WASM files are included in the package; only the first development/package setup requires network access.
 
-`npm run smoke` launches the application, verifies its local bridge/renderer, and writes ignored `smoke-result.json` and `smoke-ui.png` files. `npm run smoke -- --smoke-capture` additionally checks capture against the companion’s own test window, temporarily retitled Empire Earth; it does not prove legacy DirectDraw capture support. To diagnose a local PNG without uploading/copying it:
+`npm run smoke` uses an isolated temporary profile, verifies the local bridge/renderer, and writes ignored `smoke-result.json` and `smoke-ui.png` files. `npm run smoke -- --smoke-capture` additionally checks capture against the companion’s own test window, temporarily retitled Empire Earth; it does not prove legacy DirectDraw capture support. With the real game already visible, `npm run smoke -- --smoke-watch-game` runs the actual watch/capture/OCR/draft flow in a hidden window and reports the recognized numbers. It never submits a match or uses the normal profile's credentials. To diagnose a local PNG without uploading/copying it:
 
 ```powershell
 npm run check:ocr -- "C:\path\to\military.png"
