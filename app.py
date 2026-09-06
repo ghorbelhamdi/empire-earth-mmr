@@ -5,7 +5,7 @@ from itertools import combinations
 from functools import wraps
 from flask import Flask, request, redirect, url_for, session, jsonify, g, render_template
 from ratings import (rate_match, predict_win, ordinal_to_mmr, OS_DEFAULT_MU,
-                     OS_DEFAULT_SIGMA, RATING_SCALE, RATING_OFFSET)
+                     OS_DEFAULT_SIGMA, RATING_SCALE, RATING_OFFSET, CURRENT_VERSION)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -259,13 +259,13 @@ def _stats_by_name(players, stats):
             for row in stats}
 
 
-def calculate_match(w_players, l_players, stats=None, version='military-v2'):
+def calculate_match(w_players, l_players, stats=None, version=CURRENT_VERSION):
     new_w, new_l, details = rate_match(w_players, l_players,
                                       _stats_by_name(w_players + l_players, stats), version=version)
     changes = {}
     for p, r in zip(w_players + l_players, new_w + new_l):
         old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
-        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        new_mmr = details['players'][p['name']]['new_mmr']
         changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
     return changes, details
 
@@ -275,14 +275,14 @@ def preview_openskill_deltas(w_players, l_players):
     return calculate_match(w_players, l_players)[0]
 
 
-def apply_openskill_match(w_players, l_players, update_counts=True, stats=None, version='military-v2'):
+def apply_openskill_match(w_players, l_players, update_counts=True, stats=None, version=CURRENT_VERSION):
     """Rate a match and persist mu/sigma/mmr (and optionally wins/losses). Returns changes dict."""
     new_w, new_l, details = rate_match(w_players, l_players,
                                       _stats_by_name(w_players + l_players, stats), version=version)
     changes = {}
     for p, r in zip(w_players, new_w):
         old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
-        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        new_mmr = details['players'][p['name']]['new_mmr']
         changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
         if update_counts:
             query('UPDATE players SET mu=?, sigma=?, mmr=?, wins=wins+1 WHERE id=?',
@@ -292,7 +292,7 @@ def apply_openskill_match(w_players, l_players, update_counts=True, stats=None, 
                   (r.mu, r.sigma, new_mmr, p['id']), commit=True)
     for p, r in zip(l_players, new_l):
         old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
-        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        new_mmr = details['players'][p['name']]['new_mmr']
         changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
         if update_counts:
             query('UPDATE players SET mu=?, sigma=?, mmr=?, losses=losses+1 WHERE id=?',
@@ -633,7 +633,7 @@ def leaderboard_content():
     return f'''
 <div class="page-head">
   <div><h1>Ladder</h1>
-  <div class="page-sub">OpenSkill (Plackett–Luce) rating · fresh players start at 1000</div></div>
+  <div class="page-sub">Team result points with reviewed military performance · fresh players start at 1000</div></div>
   {stats}
 </div>
 <div class="panel ladder">
@@ -883,8 +883,8 @@ def admin_panel_content(pending, players):
   <div class="acts">
     <form method="post" action="/admin/set_mmr" style="display:flex;gap:6px;margin:0">{csrf_field()}
       <input type="hidden" name="player_id" value="{p["id"]}">
-      <input name="mmr" type="number" value="{p["mmr"]}" class="mmr-input">
-      <button class="btn btn-solid-2 btn-sm">Set</button></form>
+      <input name="mmr" type="number" value="{p["mmr"]}" class="mmr-input" aria-label="Public MMR for {esc(p['name'])}">
+      <button class="btn btn-solid-2 btn-sm" title="Adjust public points; matchmaking skill stays unchanged">Set</button></form>
     <button class="btn btn-ghost btn-sm"
       onclick="adminRenamePlayer({p["id"]}, {js_name}, '{csrf_token()}')">Rename</button>
     <form method="post" action="/admin/reset/{p["id"]}" style="margin:0">{csrf_field()}
@@ -1114,7 +1114,7 @@ def submit_match():
                     (team1,team2,winner,mmr_changes,status,rating_version,rating_details,rated_order)
                     VALUES (?,?,?,?,?,?,?,?)''',
                     (json.dumps([p['name'] for p in t1_players]), json.dumps([p['name'] for p in t2_players]),
-                     winner, json.dumps(changes), status, 'military-v2', json.dumps(details), rated_order), commit=True)
+                     winner, json.dumps(changes), status, CURRENT_VERSION, json.dumps(details), rated_order), commit=True)
             summary = ', '.join(f"{n} {d}" for n, d in changes.items())
             if status == 'approved':
                 msg = flash_html(f'Match recorded! MMR changes: {summary}')
@@ -1192,9 +1192,9 @@ def approve_match(match_id):
                 return page('Approval failed', flash_html('The complete roster is no longer available. Deny this report and submit a corrected match.', 'error'), 'admin'), 409
             changes, details = apply_openskill_match(w_players, l_players,
                 stats=json.loads(m['military_stats']) if m.get('military_stats') else None,
-                version=m.get('rating_version') or 'openskill-v1')
-            query('UPDATE matches SET status=?,mmr_changes=?,rating_details=?,rated_order=? WHERE id=?',
-                  ('approved', json.dumps(changes), json.dumps(details), next_rated_order(), match_id), commit=True)
+                version=CURRENT_VERSION)
+            query('UPDATE matches SET status=?,mmr_changes=?,rating_details=?,rated_order=?,rating_version=? WHERE id=?',
+                  ('approved', json.dumps(changes), json.dumps(details), next_rated_order(), CURRENT_VERSION, match_id), commit=True)
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/deny/<int:match_id>', methods=['POST'])
@@ -1311,9 +1311,7 @@ def set_mmr():
     with rating_transaction():
         player = query('SELECT * FROM players WHERE id=?', (pid,), one=True)
         if player:
-            sigma = player['sigma'] if player.get('sigma') is not None else OS_DEFAULT_SIGMA
-            mu = (mmr - RATING_OFFSET) / RATING_SCALE + 3 * sigma
-            query('UPDATE players SET mmr=?,mu=?,sigma=? WHERE id=?', (mmr, mu, sigma, pid), commit=True)
+            query('UPDATE players SET mmr=? WHERE id=?', (mmr, pid), commit=True)
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/reset/<int:player_id>', methods=['POST'])
@@ -1330,8 +1328,7 @@ def reset_player(player_id):
 @app.route('/admin/recalculate_mmr', methods=['POST'])
 @admin_required
 def recalculate_mmr():
-    """Replay all approved matches in order with the current MMR formula,
-    including team-size adjustments. Resets all players first."""
+    """Replay approved matches using their recorded rating versions and order."""
     if not check_csrf():
         return redirect(url_for('admin_panel'))
     replayed = recalc_all_openskill()

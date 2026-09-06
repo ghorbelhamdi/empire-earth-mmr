@@ -102,7 +102,7 @@ class CompanionApiTests(unittest.TestCase):
         preview = self.post(payload, '/api/v1/matches/preview')
         self.assertEqual(preview.status_code, 200, preview.json)
         self.assertEqual(set(preview.json['changes']), {'Alice', 'Bob', 'Carol', 'Dave'})
-        self.assertEqual(preview.json['rating_details']['version'], 'military-v2')
+        self.assertEqual(preview.json['rating_details']['version'], backend.CURRENT_VERSION)
         with patch.object(backend, 'REQUIRE_MATCH_APPROVAL', False):
             response = self.post(payload)
         self.assertEqual(response.status_code, 201)
@@ -254,7 +254,8 @@ class CompanionApiTests(unittest.TestCase):
         second = self.submit(self.payload(winner='team2'))
         with backend.app.app_context():
             backend.query("UPDATE matches SET rating_version='openskill-v1',military_stats=NULL WHERE id=?", (second,), commit=True)
-        self.approve(second)
+        with patch.object(backend, 'CURRENT_VERSION', 'openskill-v1'):
+            self.approve(second)
         self.approve(first)
         before_players, before_matches = self.rows('players'), self.rows('matches')
         self.assertLess(before_matches[1]['rated_order'], before_matches[0]['rated_order'])
@@ -362,13 +363,37 @@ class CompanionApiTests(unittest.TestCase):
         response = self.client.post('/api/players/rename', json={'player_id': 1, 'new_name': 'New'}, headers={'X-CSRF-Token': 'test-csrf'})
         self.assertEqual(response.status_code, 403)
 
-    def test_set_and_reset_mmr_update_underlying_skill(self):
+    def test_set_public_mmr_preserves_model_and_reset_resets_both(self):
+        original = self.rows('players')[0]
         self.admin().post('/admin/set_mmr', data={'csrf_token': 'test-csrf', 'player_id': '1', 'mmr': '1550'})
         player = self.rows('players')[0]
-        self.assertEqual(backend.ordinal_to_mmr(player['mu'], player['sigma']), 1550)
+        self.assertEqual(player['mmr'], 1550)
+        self.assertEqual((player['mu'], player['sigma']), (original['mu'], original['sigma']))
         self.admin().post('/admin/reset/1', data={'csrf_token': 'test-csrf'})
         player = self.rows('players')[0]
         self.assertEqual((player['mmr'], player['mu'], player['sigma']), (1000, 25.0, 25.0 / 3.0))
+
+    def test_public_points_preview_approval_and_legacy_pending_upgrade(self):
+        with backend.app.app_context():
+            backend.query('UPDATE players SET mmr=1450,mu=31,sigma=7 WHERE id=1', commit=True)
+            backend.query('UPDATE players SET mmr=950,mu=24,sigma=3 WHERE id=2', commit=True)
+        payload = self.payload(stats=[], stats_confirmed=False, evidence=None)
+        preview = self.post(payload, '/api/v1/matches/preview').json
+        self.assertEqual(preview['changes']['Alice'], preview['changes']['Bob'])
+        match_id = self.submit(payload)
+        with backend.app.app_context():
+            backend.query("UPDATE matches SET rating_version='military-v2' WHERE id=?", (match_id,), commit=True)
+        self.approve(match_id)
+        match = self.rows('matches')[0]
+        self.assertEqual(match['rating_version'], backend.CURRENT_VERSION)
+        self.assertEqual(json.loads(match['mmr_changes']), preview['changes'])
+        for player in self.rows('players'):
+            audit = preview['rating_details']['players'][player['name']]
+            self.assertEqual(player['mmr'], audit['new_mmr'])
+            self.assertEqual(player['mmr'] - audit['old_mmr'], audit['final_mmr_delta'])
+        history = self.client.get('/history').get_data(as_text=True)
+        self.assertIn('Result', history)
+        self.assertIn('Military', history)
 
     def test_web_rosters_reject_unknown_duplicate_and_invalid_ids(self):
         self.admin()

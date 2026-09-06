@@ -28,13 +28,27 @@ Screenshots remain on the user's PC. The API receives reviewed military counts a
 
 ## Ratings
 
-OpenSkill Plackett–Luce remains the result-based model. MMR is the conservative estimate `(mu - 3 * sigma) * 40 + 1000`. Fresh players start at 1000. Uncertainty is part of this display, so MMR is not a fixed win/loss points schedule.
+New matches use `team-mmr-v3`. Public MMR starts at 1000 and is tracked separately from OpenSkill's internal skill and uncertainty. Teammates receive the same result-based points before military adjustments; an individual player's uncertainty no longer adds a personal MMR bonus. Balanced matches with equal team sizes award about 24 points per winner and subtract 24 per loser. Favored teams earn less for winning; upsets earn more.
 
-New matches use `military-v2`. When complete, confirmed stats are supplied, a smoothed logarithmic kills/losses score makes a bounded adjustment to each player's underlying skill change. Adjustments are centered within each team, sum to zero, and cannot exceed 10% of the player's base skill change. Single-player teams, equal contributions, and matches without stats are unchanged. See [`ratings.py`](ratings.py) for the exact formula and audit fields.
+The result-based points pool is `48 * (1 - predicted_winner_probability) * min(team_sizes)`, rounded to a multiple of the least common multiple of both team sizes. Dividing this pool equally within each team gives integer changes and equal total gains and losses, including uneven teams. The factor 48 sets the scale, not a strict per-player maximum: rounding with uneven teams can exceed it, while a near-certain favorite can earn zero. OpenSkill Plackett–Luce still supplies win probabilities and team balancing, with the existing `military-v2` internal skill update.
 
-This military modifier is a conservative starting policy, not a calibrated skill model. Unit counts do not capture unit cost, economy, scouting, or support. Review real matches with the group before increasing its influence. Capture errors must be corrected before submission.
+Complete, confirmed military stats can redistribute up to 20% of the result-based points within each team, rounded down to whole points. The modifier uses a team-centered, smoothed logarithmic kills/losses score; integer adjustments sum to zero within each team. Single-player teams, equal contributions, and matches without stats receive no military adjustment. Match details show each player's result points, military adjustment, and final MMR change. See [`ratings.py`](ratings.py) for the exact calculation and audit fields.
 
-Existing matches keep `openskill-v1`. Match approval recalculates against current ratings, and replay uses each match's stored rating version and approved order. Team balancing uses the same model's win probabilities instead of comparing average displayed MMR.
+Military weighting is a policy choice, not a calibrated Empire Earth skill model. Unit counts do not capture unit cost, economy, scouting, or support. Capture errors must be corrected before submission.
+
+Approval calculates against current ratings, and replay follows each match's stored rating version and approval order. Historical `openskill-v1` and `military-v2` remain supported: they display the conservative estimate `(mu - 3 * sigma) * 40 + 1000`, with v2 military adjustments capped at 10% of the underlying skill change. Changing historical standings requires an explicit rebuild under the new version; ordinary startup does not rewrite them.
+
+For SQLite, [`tools/recalculate_ratings.py`](tools/recalculate_ratings.py) previews a rebuild of all approved matches and standings without writing to the database:
+
+```sh
+python tools/recalculate_ratings.py --database /absolute/empire.db --output /absolute/rating-plan.json
+```
+
+Review the plan, then apply it using its `input_sha256` and a new backup path. The command checks that the source database has not changed, creates a backup, and applies the rebuild in a transaction:
+
+```sh
+python tools/recalculate_ratings.py --database /absolute/empire.db --output /absolute/rating-plan-applied.json --apply --expect-sha INPUT_SHA256 --backup /absolute/pre-rebuild-backup.db
+```
 
 ## Verification
 

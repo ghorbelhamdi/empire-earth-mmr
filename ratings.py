@@ -1,5 +1,18 @@
 """Versioned, deterministic rating calculations, independent of Flask and the DB.
 
+``team-mmr-v3`` keeps the v2 internal skill model for team prediction, but public
+MMR is an independent integer balance. Every teammate receives the same result
+base; public MMR no longer gains points simply because uncertainty decreases.
+The team point pool is 48 * (1 - winner_probability) * min(team_sizes), rounded
+half-up to a multiple of lcm(team_sizes). Dividing that pool between the teams
+makes the integer result changes exactly zero-sum, including uneven matches.
+Very predictable wins can award zero; quantization can slightly exceed 48 per
+player for uneven teams. Public military differences redistribute up to 20% of
+the integer team base, using team-centered log kill/loss scores and deterministic
+largest-remainder rounding. They are exactly zero-sum and cannot reverse a result.
+
+The two historical versions below remain unchanged for reproducible replay.
+
 ``openskill-v1`` is the existing Plackett-Luce win/loss update. ``military-v2``
 uses exactly that update as its baseline, then optionally redistributes a small
 amount of mu *within each team*. All players' post-match sigma values are kept.
@@ -27,7 +40,7 @@ before approval. Log smoothing handles zero losses and limits outliers; it does
 not make an OCR capture or a self-reported result trustworthy. Keep the version,
 statistics, and OpenSkill dependency version when replaying history.
 
-Display MMR retains the existing conservative ordinal. Since sigma can decrease
+Legacy display MMR retains the existing conservative ordinal. Since sigma can decrease
 after a loss, *display MMR* may increase even when mu decreases. The military
 guarantees concern mu; integer MMR rounding need not be zero-sum.
 Floating-point mu rounding is directed back toward the baseline if the nearest
@@ -47,9 +60,12 @@ OS_DEFAULT_SIGMA = 25.0 / 3.0
 RATING_SCALE = 40.0
 RATING_OFFSET = 1000.0
 LEGACY_VERSION = "openskill-v1"
-CURRENT_VERSION = "military-v2"
-SUPPORTED_VERSIONS = frozenset((LEGACY_VERSION, CURRENT_VERSION))
+MILITARY_VERSION = "military-v2"
+CURRENT_VERSION = "team-mmr-v3"
+SUPPORTED_VERSIONS = frozenset((LEGACY_VERSION, MILITARY_VERSION, CURRENT_VERSION))
 MAX_MODIFIER_FRACTION = 0.10
+PUBLIC_MODIFIER_FRACTION = 0.20
+TEAM_K_FACTOR = 48
 MAX_STAT_COUNT = 1_000_000
 
 
@@ -126,7 +142,7 @@ def _military_adjustments(before, baseline, stats):
     return adjustments, scores
 
 
-def rate_match(w_players, l_players, stats=None, version=CURRENT_VERSION):
+def _rate_openskill(w_players, l_players, stats=None, version=MILITARY_VERSION):
     """Return winner ratings, loser ratings, and JSON-serializable audit details.
 
     Players are mappings with ``name``, optional ``mu``, and optional ``sigma``.
@@ -139,7 +155,7 @@ def rate_match(w_players, l_players, stats=None, version=CURRENT_VERSION):
     Inputs are never mutated. Outputs remain standard OpenSkill Rating objects.
     The audit omits random OpenSkill object IDs so it is replay deterministic.
     """
-    if not isinstance(version, str) or version not in SUPPORTED_VERSIONS:
+    if not isinstance(version, str) or version not in (LEGACY_VERSION, MILITARY_VERSION):
         raise ValueError(f"Unsupported rating version: {version!r}.")
     before_w, before_l = _teams(w_players, l_players)
     clean_stats = _validate_stats(stats, [r.name for r in before_w + before_l])
@@ -148,11 +164,11 @@ def rate_match(w_players, l_players, stats=None, version=CURRENT_VERSION):
         "version": version,
         "stats_present": clean_stats is not None,
         "performance_applied": False,
-        "max_modifier_fraction": MAX_MODIFIER_FRACTION if version == CURRENT_VERSION else 0.0,
+        "max_modifier_fraction": MAX_MODIFIER_FRACTION if version == MILITARY_VERSION else 0.0,
         "players": {},
     }
     for before, baseline in ((before_w, new_w), (before_l, new_l)):
-        if version == CURRENT_VERSION and clean_stats is not None:
+        if version == MILITARY_VERSION and clean_stats is not None:
             adjustments, scores = _military_adjustments(before, baseline, clean_stats)
         else:
             adjustments, scores = [0.0] * len(before), [None] * len(before)
@@ -183,6 +199,103 @@ def rate_match(w_players, l_players, stats=None, version=CURRENT_VERSION):
                 row.update(clean_stats[old.name])
             details["players"][old.name] = row
             details["performance_applied"] |= actual_adjustment != 0.0
+    return new_w, new_l, details
+
+
+def _public_mmr(player):
+    """V3 keeps a separate integer public balance; absent values use the old ordinal."""
+    mmr = player.get("mmr")
+    if mmr is None:
+        rating = _player_rating(player)
+        return ordinal_to_mmr(rating.mu, rating.sigma)
+    if type(mmr) is not int:
+        raise ValueError("Public MMR must be an integer, or omitted.")
+    return mmr
+
+
+def _public_military_adjustments(team, base, stats):
+    """Return bounded integer adjustments summing exactly to zero for one team."""
+    # The specified 20% cap is one fifth, evaluated exactly for integer points.
+    cap = abs(base) // 5
+    if stats is None or cap == 0 or len(team) == 1:
+        return [0] * len(team)
+    scores = [math.log1p(stats[player["name"]]["units_killed"])
+              - math.log1p(stats[player["name"]]["units_lost"]) for player in team]
+    if max(scores) == min(scores):
+        return [0] * len(team)
+    mean = math.fsum(scores) / len(scores)
+    centered = [score - mean for score in scores]
+    denominator = max(0.5, max(abs(value) for value in centered))
+    raw = [max(-cap, min(cap, cap * value / denominator)) for value in centered]
+    rounded = [math.floor(value) for value in raw]
+    remainder = -sum(rounded)
+    def stable_identity(index):
+        player = team[index]
+        # A ladder player can be renamed. Its persistent ID keeps historical
+        # tie rounding unchanged; pure model callers fall back to the name.
+        if type(player.get("id")) is int:
+            return (0, player["id"], player["name"])
+        return (1, player["name"])
+    order = sorted((index for index in range(len(team)) if rounded[index] < cap),
+                   key=lambda index: (-(raw[index] - rounded[index]), stable_identity(index)))
+    for index in order[:remainder]:
+        rounded[index] += 1
+    if sum(rounded) != 0 or any(abs(value) > cap for value in rounded):
+        raise ArithmeticError("Military point redistribution failed its balance invariant.")
+    return rounded
+
+
+def rate_match(w_players, l_players, stats=None, version=CURRENT_VERSION):
+    """Return internal ratings and the version's authoritative public MMR audit.
+
+    For v3, persist ``details['players'][name]['new_mmr']`` as public MMR; the
+    returned rating objects continue to describe internal OpenSkill mu/sigma.
+    ``performance_applied`` and ``max_modifier_fraction`` refer to public points
+    in v3, while the explicit ``model_*`` fields describe the unchanged v2 model.
+    Legacy v1/v2 calculations and detail dictionaries retain their exact format.
+    """
+    if not isinstance(version, str) or version not in SUPPORTED_VERSIONS:
+        raise ValueError(f"Unsupported rating version: {version!r}.")
+    if version != CURRENT_VERSION:
+        return _rate_openskill(w_players, l_players, stats, version)
+
+    # Validate rosters before looking up public balances. Predictions use the
+    # same pre-match internal ratings as the balancer, without a confidence bonus.
+    winner_probability, loser_probability = predict_win(w_players, l_players)
+    old_mmr = {player["name"]: _public_mmr(player) for player in w_players + l_players}
+    new_w, new_l, details = _rate_openskill(w_players, l_players, stats, MILITARY_VERSION)
+    quantum = math.lcm(len(w_players), len(l_players))
+    target_pool = TEAM_K_FACTOR * (1.0 - winner_probability) * min(len(w_players), len(l_players))
+    pool = quantum * math.floor(target_pool / quantum + 0.5)
+    winner_base, loser_base = pool // len(w_players), -(pool // len(l_players))
+    details.update({
+        "version": CURRENT_VERSION,
+        "model_version": MILITARY_VERSION,
+        "model_modifier_fraction": MAX_MODIFIER_FRACTION,
+        "model_performance_applied": details["performance_applied"],
+        "performance_applied": False,
+        "max_modifier_fraction": PUBLIC_MODIFIER_FRACTION,
+        "k_factor": TEAM_K_FACTOR,
+        "winner_probability": winner_probability,
+        "loser_probability": loser_probability,
+        "team_mmr_pool": pool,
+        "team_mmr_quantum": quantum,
+    })
+    for team, base in ((w_players, winner_base), (l_players, loser_base)):
+        adjustments = _public_military_adjustments(team, base, stats)
+        for player, adjustment in zip(team, adjustments):
+            row = details["players"][player["name"]]
+            row.update({
+                "old_model_mmr": row["old_mmr"],
+                "new_model_mmr": row["new_mmr"],
+                "old_mmr": old_mmr[player["name"]],
+                "new_mmr": old_mmr[player["name"]] + base + adjustment,
+                "base_mmr_delta": base,
+                "performance_mmr_delta": adjustment,
+                "final_mmr_delta": base + adjustment,
+                "performance_mmr_cap": abs(base) // 5,
+            })
+            details["performance_applied"] |= adjustment != 0
     return new_w, new_l, details
 
 
