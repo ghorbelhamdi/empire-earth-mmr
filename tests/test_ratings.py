@@ -3,9 +3,10 @@ import json
 import math
 import random
 import unittest
+from pathlib import Path
 
 from ratings import (
-    CURRENT_VERSION,
+    MILITARY_VERSION,
     LEGACY_VERSION,
     MAX_MODIFIER_FRACTION,
     MAX_STAT_COUNT,
@@ -15,8 +16,13 @@ from ratings import (
     _military_adjustments,
     ordinal_to_mmr,
     predict_win,
-    rate_match,
+    rate_match as versioned_rate_match,
 )
+
+
+def military_v2(winners, losers, stats=None, version=MILITARY_VERSION):
+    """Keep the original model regression suite explicitly bound to v2."""
+    return versioned_rate_match(winners, losers, stats, version)
 
 
 def player(name, mu=OS_DEFAULT_MU, sigma=OS_DEFAULT_SIGMA):
@@ -48,9 +54,20 @@ class RatingsTests(unittest.TestCase):
     def test_default_mmr_is_existing_1000(self):
         self.assertEqual(ordinal_to_mmr(OS_DEFAULT_MU, OS_DEFAULT_SIGMA), 1000)
 
+    def test_legacy_versions_match_pre_v3_golden_ratings_and_audit_exactly(self):
+        winners = [player("Alice", 34, 1), player("Bob", 19, 8)]
+        losers = [player("Chloe", 25, 3), player("David", 27, 6)]
+        fixtures = json.loads((Path(__file__).parent / "fixtures" / "legacy_ratings.json").read_text(encoding="utf-8"))
+        for version, expected in fixtures.items():
+            with self.subTest(version=version):
+                new_w, new_l, details = versioned_rate_match(winners, losers, self.stats, version)
+                actual = {"ratings": [[{"name": r.name, "mu": r.mu, "sigma": r.sigma} for r in team]
+                                      for team in (new_w, new_l)], "details": details}
+                self.assertEqual(actual, expected)
+
     def test_no_stats_is_exactly_original_openskill(self):
-        for version in (LEGACY_VERSION, CURRENT_VERSION):
-            new_w, new_l, details = rate_match(self.winners, self.losers, version=version)
+        for version in (LEGACY_VERSION, MILITARY_VERSION):
+            new_w, new_l, details = military_v2(self.winners, self.losers, version=version)
             self.assertEqual(values((new_w, new_l)), values(self.baseline()))
             self.assertFalse(details["performance_applied"])
             self.assertFalse(details["stats_present"])
@@ -58,7 +75,7 @@ class RatingsTests(unittest.TestCase):
                                 for row in details["players"].values()))
 
     def test_legacy_ignores_complete_stats_and_retains_them_in_audit(self):
-        new_w, new_l, details = rate_match(self.winners, self.losers, self.stats, LEGACY_VERSION)
+        new_w, new_l, details = military_v2(self.winners, self.losers, self.stats, LEGACY_VERSION)
         self.assertEqual(values((new_w, new_l)), values(self.baseline()))
         self.assertTrue(details["stats_present"])
         self.assertFalse(details["performance_applied"])
@@ -68,7 +85,7 @@ class RatingsTests(unittest.TestCase):
         varied_w = [player("Alice", 34, 1), player("Bob", 19, 8)]
         varied_l = [player("Chloe", 25, 3), player("David", 27, 6)]
         base_teams = self.baseline(varied_w, varied_l)
-        new_w, new_l, details = rate_match(varied_w, varied_l, self.stats)
+        new_w, new_l, details = military_v2(varied_w, varied_l, self.stats)
         self.assertTrue(details["performance_applied"])
         for old_team, baseline, changed in zip((varied_w, varied_l), base_teams, (new_w, new_l)):
             self.assertAlmostEqual(sum(r.mu for r in baseline), sum(r.mu for r in changed), places=12)
@@ -86,7 +103,7 @@ class RatingsTests(unittest.TestCase):
     def test_equal_scores_and_all_zero_are_exactly_neutral(self):
         for killed, lost in ((0, 0), (8, 4), (1000, 0)):
             stats = {name: {"units_killed": killed, "units_lost": lost} for name in self.stats}
-            new_w, new_l, details = rate_match(self.winners, self.losers, stats)
+            new_w, new_l, details = military_v2(self.winners, self.losers, stats)
             self.assertEqual(values((new_w, new_l)), values(self.baseline()))
             self.assertFalse(details["performance_applied"])
 
@@ -96,7 +113,7 @@ class RatingsTests(unittest.TestCase):
             "Alice": {"units_killed": MAX_STAT_COUNT, "units_lost": 0},
             "Chloe": {"units_killed": 0, "units_lost": MAX_STAT_COUNT},
         }
-        new_w, new_l, details = rate_match(winners, losers, stats)
+        new_w, new_l, details = military_v2(winners, losers, stats)
         self.assertEqual(values((new_w, new_l)), values(self.baseline(winners, losers)))
         self.assertFalse(details["performance_applied"])
 
@@ -104,7 +121,7 @@ class RatingsTests(unittest.TestCase):
         stats = {name: {"units_killed": MAX_STAT_COUNT if index % 2 else 0,
                         "units_lost": 0 if index % 2 else MAX_STAT_COUNT}
                  for index, name in enumerate(self.stats)}
-        new_w, new_l, details = rate_match(self.winners, self.losers, stats)
+        new_w, new_l, details = military_v2(self.winners, self.losers, stats)
         json.dumps(details, allow_nan=False)
         for row in details["players"].values():
             self.assertTrue(math.isfinite(row["military_score"]))
@@ -126,28 +143,28 @@ class RatingsTests(unittest.TestCase):
         wrong_case["alice"] = wrong_case.pop("Alice")
         for stats in ({}, missing, extra, wrong_case, [], "invalid"):
             with self.subTest(stats=stats), self.assertRaises(ValueError):
-                rate_match(self.winners, self.losers, stats)
+                military_v2(self.winners, self.losers, stats)
 
     def test_bad_stat_values_are_rejected_including_in_legacy_mode(self):
         for bad in (-1, MAX_STAT_COUNT + 1, True, False, 1.0, "1", None, float("nan")):
             for field in ("units_killed", "units_lost"):
                 stats = copy.deepcopy(self.stats)
                 stats["Alice"][field] = bad
-                for version in (CURRENT_VERSION, LEGACY_VERSION):
+                for version in (MILITARY_VERSION, LEGACY_VERSION):
                     with self.subTest(value=bad, field=field, version=version), self.assertRaises(ValueError):
-                        rate_match(self.winners, self.losers, stats, version)
+                        military_v2(self.winners, self.losers, stats, version)
 
     def test_missing_and_unknown_stat_fields_are_rejected(self):
         for bad_row in ({"units_killed": 1}, {"units_killed": 1, "units_lost": 1, "kills": 1}, None):
             stats = copy.deepcopy(self.stats)
             stats["Alice"] = bad_row
             with self.subTest(row=bad_row), self.assertRaises(ValueError):
-                rate_match(self.winners, self.losers, stats)
+                military_v2(self.winners, self.losers, stats)
 
     def test_unknown_version_rejected(self):
         for version in ("typo-v2", None, [], {}):
             with self.subTest(version=version), self.assertRaises(ValueError):
-                rate_match(self.winners, self.losers, version=version)
+                military_v2(self.winners, self.losers, version=version)
 
     def test_near_certain_wins_and_upsets_obey_cap_even_at_float_precision(self):
         stats = {name: {"units_killed": MAX_STAT_COUNT if index % 2 else 0,
@@ -158,7 +175,7 @@ class RatingsTests(unittest.TestCase):
                 winner_mu, loser_mu = (25 + gap, 25 - gap) if favorite_wins else (25 - gap, 25 + gap)
                 winners = [player("Alice", winner_mu, .01), player("Bob", winner_mu, 8.33)]
                 losers = [player("Chloe", loser_mu, .01), player("David", loser_mu, 8.33)]
-                new_w, new_l, details = rate_match(winners, losers, stats)
+                new_w, new_l, details = military_v2(winners, losers, stats)
                 base_teams = self.baseline(winners, losers)
                 for baseline, changed in zip(base_teams, (new_w, new_l)):
                     self.assertAlmostEqual(math.fsum(r.mu for r in baseline),
@@ -179,20 +196,20 @@ class RatingsTests(unittest.TestCase):
                      ([player("Alice", mu=float("inf"))], self.losers),
                      ([player("Alice", sigma=float("nan"))], self.losers)):
             with self.subTest(winners=w, losers=l), self.assertRaises(ValueError):
-                rate_match(w, l)
+                military_v2(w, l)
 
     def test_missing_or_null_ratings_preserve_defaults(self):
-        new_w, new_l, _ = rate_match([{"name": "Alice"}, {"name": "Bob", "mu": None, "sigma": None}], self.losers)
+        new_w, new_l, _ = military_v2([{"name": "Alice"}, {"name": "Bob", "mu": None, "sigma": None}], self.losers)
         self.assertEqual(values((new_w, new_l)), values(self.baseline()))
 
     def test_inputs_are_unchanged(self):
         old_inputs = copy.deepcopy((self.winners, self.losers, self.stats))
-        rate_match(self.winners, self.losers, self.stats)
+        military_v2(self.winners, self.losers, self.stats)
         self.assertEqual((self.winners, self.losers, self.stats), old_inputs)
 
     def test_repeated_match_and_details_are_deterministic(self):
-        new_w, new_l, details = rate_match(self.winners, self.losers, self.stats)
-        repeated_w, repeated_l, repeated_details = rate_match(self.winners, self.losers, self.stats)
+        new_w, new_l, details = military_v2(self.winners, self.losers, self.stats)
+        repeated_w, repeated_l, repeated_details = military_v2(self.winners, self.losers, self.stats)
         self.assertEqual(values((new_w, new_l)), values((repeated_w, repeated_l)))
         self.assertEqual(details, repeated_details)
         json.dumps(details, allow_nan=False)
@@ -202,10 +219,10 @@ class RatingsTests(unittest.TestCase):
             players = {p["name"]: copy.deepcopy(p) for p in self.winners + self.losers}
             audit = []
             matches = [(["Alice", "Bob"], ["Chloe", "David"], LEGACY_VERSION),
-                       (["Alice", "Chloe"], ["Bob", "David"], CURRENT_VERSION),
-                       (["David", "Bob"], ["Chloe", "Alice"], CURRENT_VERSION)]
+                       (["Alice", "Chloe"], ["Bob", "David"], MILITARY_VERSION),
+                       (["David", "Bob"], ["Chloe", "Alice"], MILITARY_VERSION)]
             for winners, losers, version in matches:
-                new_w, new_l, details = rate_match([players[n] for n in winners], [players[n] for n in losers],
+                new_w, new_l, details = military_v2([players[n] for n in winners], [players[n] for n in losers],
                                                  None if version == LEGACY_VERSION else self.stats, version)
                 audit.append(details)
                 for rating in new_w + new_l:
@@ -222,7 +239,7 @@ class RatingsTests(unittest.TestCase):
                 stats = {p["name"]: {"units_killed": rng.randint(0, MAX_STAT_COUNT),
                                      "units_lost": rng.randint(0, MAX_STAT_COUNT)} for t in teams for p in t}
                 base_teams = self.baseline(*teams)
-                new_w, new_l, _ = rate_match(*teams, stats=stats)
+                new_w, new_l, _ = military_v2(*teams, stats=stats)
                 for before, base, changed in zip(teams, base_teams, (new_w, new_l)):
                     self.assertAlmostEqual(sum(r.mu for r in base), sum(r.mu for r in changed), places=11)
                     for old, baseline, new in zip(before, base, changed):

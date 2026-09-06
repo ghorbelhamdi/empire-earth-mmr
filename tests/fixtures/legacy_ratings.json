@@ -1,0 +1,154 @@
+{
+  "openskill-v1": {
+    "ratings": [
+      [
+        {
+          "name": "Alice",
+          "mu": 34.04010907395569,
+          "sigma": 1.0028822724962068
+        },
+        {
+          "name": "Bob",
+          "mu": 21.54955403206617,
+          "sigma": 7.698898576583596
+        }
+      ],
+      [
+        {
+          "name": "Chloe",
+          "mu": 24.64123124882393,
+          "sigma": 2.9881340627421373
+        },
+        {
+          "name": "David",
+          "mu": 25.565754838205155,
+          "sigma": 5.895795032390079
+        }
+      ]
+    ],
+    "details": {
+      "version": "openskill-v1",
+      "stats_present": true,
+      "performance_applied": false,
+      "max_modifier_fraction": 0.0,
+      "players": {
+        "Alice": {
+          "base_mu_delta": 0.04010907395569063,
+          "performance_mu_delta": 0.0,
+          "final_mu_delta": 0.04010907395569063,
+          "military_score": null,
+          "units_killed": 136,
+          "units_lost": 55,
+          "old_mmr": 2240,
+          "new_mmr": 2241
+        },
+        "Bob": {
+          "base_mu_delta": 2.549554032066169,
+          "performance_mu_delta": 0.0,
+          "final_mu_delta": 2.549554032066169,
+          "military_score": null,
+          "units_killed": 91,
+          "units_lost": 55,
+          "old_mmr": 800,
+          "new_mmr": 938
+        },
+        "Chloe": {
+          "base_mu_delta": -0.35876875117606843,
+          "performance_mu_delta": 0.0,
+          "final_mu_delta": -0.35876875117606843,
+          "military_score": null,
+          "units_killed": 93,
+          "units_lost": 175,
+          "old_mmr": 1640,
+          "new_mmr": 1627
+        },
+        "David": {
+          "base_mu_delta": -1.4342451617948448,
+          "performance_mu_delta": 0.0,
+          "final_mu_delta": -1.4342451617948448,
+          "military_score": null,
+          "units_killed": 16,
+          "units_lost": 52,
+          "old_mmr": 1360,
+          "new_mmr": 1315
+        }
+      }
+    }
+  },
+  "military-v2": {
+    "ratings": [
+      [
+        {
+          "name": "Alice",
+          "mu": 34.041681450282475,
+          "sigma": 1.0028822724962068
+        },
+        {
+          "name": "Bob",
+          "mu": 21.547981655739388,
+          "sigma": 7.698898576583596
+        }
+      ],
+      [
+        {
+          "name": "Chloe",
+          "mu": 24.655864144948428,
+          "sigma": 2.9881340627421373
+        },
+        {
+          "name": "David",
+          "mu": 25.55112194208066,
+          "sigma": 5.895795032390079
+        }
+      ]
+    ],
+    "details": {
+      "version": "military-v2",
+      "stats_present": true,
+      "performance_applied": true,
+      "max_modifier_fraction": 0.1,
+      "players": {
+        "Alice": {
+          "base_mu_delta": 0.04010907395569063,
+          "performance_mu_delta": 0.0015723763267843083,
+          "final_mu_delta": 0.04168145028247494,
+          "military_score": 0.8946292350929754,
+          "units_killed": 136,
+          "units_lost": 55,
+          "old_mmr": 2240,
+          "new_mmr": 2241
+        },
+        "Bob": {
+          "base_mu_delta": 2.549554032066169,
+          "performance_mu_delta": -0.0015723763267807556,
+          "final_mu_delta": 2.547981655739388,
+          "military_score": 0.4964368863138908,
+          "units_killed": 91,
+          "units_lost": 55,
+          "old_mmr": 800,
+          "new_mmr": 938
+        },
+        "Chloe": {
+          "base_mu_delta": -0.35876875117606843,
+          "performance_mu_delta": 0.014632896124496142,
+          "final_mu_delta": -0.3441358550515723,
+          "military_score": -0.6271892127681475,
+          "units_killed": 93,
+          "units_lost": 175,
+          "old_mmr": 1640,
+          "new_mmr": 1628
+        },
+        "David": {
+          "base_mu_delta": -1.4342451617948448,
+          "performance_mu_delta": -0.014632896124496142,
+          "final_mu_delta": -1.448878057919341,
+          "military_score": -1.1370785694959058,
+          "units_killed": 16,
+          "units_lost": 52,
+          "old_mmr": 1360,
+          "new_mmr": 1315
+        }
+      }
+    }
+  }
+}

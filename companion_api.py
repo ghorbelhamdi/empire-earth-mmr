@@ -144,7 +144,7 @@ def register_companion(app, backend):
 
     @api.get('/companion')
     def metadata():
-        return jsonify(api_version=1, game='Empire Earth (original)', rating_version='military-v2',
+        return jsonify(api_version=1, game='Empire Earth (original)', rating_version=backend.CURRENT_VERSION,
                        approval_required=True, max_players=MAX_PLAYERS, max_stat=MAX_STAT,
                        screenshot_uploads=False, download_url=backend.companion_download_url())
 
@@ -161,7 +161,7 @@ def register_companion(app, backend):
     def preview():
         with backend.rating_transaction():
             payload, _, _, winners, losers = parse_payload()
-            changes, details = backend.calculate_match(winners, losers, payload['stats'], 'military-v2')
+            changes, details = backend.calculate_match(winners, losers, payload['stats'])
         return jsonify(changes=changes, rating_details=details)
 
     @api.post('/matches')
@@ -185,12 +185,12 @@ def register_companion(app, backend):
                                                   (screenshot_hash,), one=True):
                 return jsonify(error='This screenshot has already been submitted.'), 409
             payload, t1, t2, winners, losers = parse_payload(payload)
-            changes, details = backend.calculate_match(winners, losers, payload['stats'], 'military-v2')
+            changes, details = backend.calculate_match(winners, losers, payload['stats'])
             match = backend.query('''INSERT INTO matches
                 (team1,team2,winner,mmr_changes,status,rating_version,military_stats,evidence,rating_details,source)
                 VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id''',
                 (json.dumps([p['name'] for p in t1]), json.dumps([p['name'] for p in t2]), payload['winner'],
-                 json.dumps(changes), 'pending', 'military-v2', json.dumps(payload['stats']),
+                 json.dumps(changes), 'pending', backend.CURRENT_VERSION, json.dumps(payload['stats']),
                  json.dumps(payload['evidence']), json.dumps(details), 'companion'), one=True)
             backend.query('''INSERT INTO companion_submissions
                 (submission_id,token_id,payload_hash,match_id,screenshot_sha256) VALUES (?,?,?,?,?)''',
