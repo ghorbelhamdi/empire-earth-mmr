@@ -1,0 +1,5 @@
+node_modules/
+dist/
+smoke-result.json
+smoke-ui.png
+*.log

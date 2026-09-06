@@ -1,0 +1,8 @@
+{% if stats or source == 'companion' %}
+<link rel="stylesheet" href="/static/companion.css">
+<details class="match-evidence"><summary>Military stats{% if source == 'companion' %} · Companion report{% endif %} <span>{{ rating_version }}</span></summary><div class="match-evidence-body">
+{% if stats %}<table class="companion-table"><thead><tr><th>Player</th><th>Units killed</th><th>Units lost</th></tr></thead><tbody>{% for row in stats %}<tr><td>{{ row.name }}</td><td>{{ row.units_killed }}</td><td>{{ row.units_lost }}</td></tr>{% endfor %}</tbody></table>{% else %}<p class="hint">No military stats. Result-based rating only.</p>{% endif %}
+{% if evidence %}<p class="hint">Source: {{ evidence.source or 'manual' }}{% if evidence.captured_at %} · {{ evidence.captured_at }}{% endif %}. Values reviewed by the submitter.{% if evidence.source == 'screenshot' %} The image stays on their computer.{% endif %}</p>{% if evidence.sha256 %}<p class="hint evidence-hash">Capture fingerprint: <code>{{ evidence.sha256 }}</code></p>{% endif %}{% endif %}
+<p class="hint">Military adjustments are capped at 10% of the base skill change and balanced within each team. Pending MMR estimates may change when approved.</p>
+</div></details>
+{% endif %}

@@ -1,35 +1,27 @@
-import os, json, sqlite3, hashlib, secrets, math, time, logging, html
+import os, json, sqlite3, hashlib, secrets, time, logging, html, sys
+from contextlib import contextmanager
 from datetime import datetime
 from itertools import combinations
 from functools import wraps
-from flask import Flask, request, redirect, url_for, session, jsonify, g
-from openskill.models import PlackettLuce
+from flask import Flask, request, redirect, url_for, session, jsonify, g, render_template
+from ratings import (rate_match, predict_win, ordinal_to_mmr, OS_DEFAULT_MU,
+                     OS_DEFAULT_SIGMA, RATING_SCALE, RATING_OFFSET)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
+SQLITE_PATH = os.environ.get('SQLITE_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'empire.db'))
 ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD', '')
 REQUIRE_MATCH_APPROVAL = os.environ.get('REQUIRE_MATCH_APPROVAL', 'true').lower() == 'true'
 DEFAULT_MMR = 1000
-K_FACTOR = 32  # legacy, unused
 ADMIN_SESSION_TIMEOUT = 1800  # 30 minutes
-
-# --- OpenSkill (Plackett-Luce / Weng-Lin) rating model ---
-OS_MODEL = PlackettLuce()
-OS_DEFAULT_MU = 25.0
-OS_DEFAULT_SIGMA = 25.0 / 3.0
-RATING_SCALE = 40.0
-RATING_OFFSET = 1000.0
-
-def ordinal_to_mmr(mu, sigma):
-    """Map an OpenSkill rating (mu, sigma) to a displayable integer MMR.
-    Uses (mu - 3*sigma) * SCALE + OFFSET so a fresh player (mu=25, sigma=25/3)
-    lands on 1000 and a strong/confident rating grows from there."""
-    return round((mu - 3.0 * sigma) * RATING_SCALE + RATING_OFFSET)
 
 use_postgres = DATABASE_URL.startswith('postgres')
 
@@ -50,7 +42,7 @@ def csrf_field():
 
 def check_csrf():
     """Validate the CSRF token from the submitted form."""
-    token = request.form.get('csrf_token', '')
+    token = request.form.get('csrf_token', '') or request.headers.get('X-CSRF-Token', '')
     expected_token = session.get('csrf_token', None)
     return expected_token is not None and secrets.compare_digest(token, expected_token)
 
@@ -63,11 +55,10 @@ def get_db():
             url = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
             g.db = psycopg.connect(url, autocommit=True, row_factory=dict_row)
         else:
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'empire.db')
-            g.db = sqlite3.connect(db_path, timeout=10)
+            g.db = sqlite3.connect(SQLITE_PATH, timeout=30)
             g.db.row_factory = sqlite3.Row
             g.db.execute('PRAGMA journal_mode=WAL')
-            g.db.execute('PRAGMA busy_timeout=5000')
+            g.db.execute('PRAGMA busy_timeout=30000')
     return g.db
 
 @app.teardown_appcontext
@@ -85,10 +76,11 @@ def query(sql, args=(), one=False, commit=False):
         cur = db.cursor()
     cur.execute(sql, args)
     if commit:
-        if not use_postgres:
+        lastrowid = cur.lastrowid if not use_postgres else None
+        if not use_postgres and not g.get('rating_transaction_depth', 0):
             db.commit()
         cur.close()
-        return cur.lastrowid if not use_postgres else None
+        return lastrowid
     rows = cur.fetchall()
     cur.close()
     if use_postgres:
@@ -96,6 +88,58 @@ def query(sql, args=(), one=False, commit=False):
     else:
         results = [dict(r) for r in rows]
         return results[0] if one and results else results if not one else None
+
+
+@contextmanager
+def rating_transaction():
+    """Serialize rating writes across workers and commit each whole operation atomically."""
+    depth = g.get('rating_transaction_depth', 0)
+    if depth:
+        g.rating_transaction_depth = depth + 1
+        try:
+            yield
+        finally:
+            g.rating_transaction_depth = depth
+        return
+    db = get_db()
+    db.execute('BEGIN' if use_postgres else 'BEGIN IMMEDIATE')
+    g.rating_transaction_depth = 1
+    try:
+        if use_postgres:
+            # Transaction-scoped global ladder lock, also shared by replay and admin mutations.
+            db.execute('SELECT pg_advisory_xact_lock(1162169677)')
+        yield
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
+    finally:
+        g.rating_transaction_depth = 0
+
+
+def _migrate_companion_columns():
+    columns = {
+        'rating_version': "TEXT DEFAULT 'openskill-v1'",
+        'military_stats': 'TEXT', 'evidence': 'TEXT', 'rating_details': 'TEXT',
+        'source': "TEXT DEFAULT 'web'", 'rated_order': 'INTEGER',
+    }
+    with rating_transaction():
+        if use_postgres:
+            for name, definition in columns.items():
+                query(f'ALTER TABLE matches ADD COLUMN IF NOT EXISTS {name} {definition}', commit=True)
+        else:
+            existing = {row['name'] for row in query('PRAGMA table_info(matches)')}
+            for name, definition in columns.items():
+                if name not in existing:
+                    query(f'ALTER TABLE matches ADD COLUMN {name} {definition}', commit=True)
+        query('''CREATE TABLE IF NOT EXISTS companion_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, last_used_at TIMESTAMP, revoked_at TIMESTAMP)''', commit=True)
+        query('''CREATE TABLE IF NOT EXISTS companion_submissions (
+            submission_id TEXT PRIMARY KEY, token_id INTEGER NOT NULL, payload_hash TEXT NOT NULL,
+            match_id INTEGER, screenshot_sha256 TEXT UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''', commit=True)
+        # Existing values stay untouched; IDs describe the original replay ordering.
+        query("UPDATE matches SET rated_order=id WHERE status='approved' AND rated_order IS NULL", commit=True)
 
 
 def _migrate_openskill_columns():
@@ -150,6 +194,7 @@ def init_db():
                 db.commit()
                 cur.close()
             _migrate_openskill_columns()
+            _migrate_companion_columns()
             logger.info('Database initialized successfully.')
             return
         except Exception as e:
@@ -169,8 +214,7 @@ def health_check():
         if use_postgres:
             query('SELECT 1')
         else:
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'empire.db')
-            if not os.path.exists(db_path):
+            if not os.path.exists(SQLITE_PATH):
                 return jsonify({'status': 'error', 'backend': backend, 'message': 'sqlite db not found'}), 500
         players = query('SELECT COUNT(*) as cnt FROM players')
         count = players[0]['cnt'] if players else 0
@@ -195,52 +239,46 @@ def rename_player_in_matches(old_name, new_name):
             changes[new_name] = changes.pop(old_name)
             changed = True
         if changed:
-            query('UPDATE matches SET team1=?, team2=?, mmr_changes=? WHERE id=?',
-                  (json.dumps(t1), json.dumps(t2), json.dumps(changes), m['id']), commit=True)
-
-def expected(ra, rb):
-    """Legacy Elo helper (retained only for backward compatibility - not used by OpenSkill path)."""
-    return 1.0 / (1 + 10 ** ((rb - ra) / 400.0))
-
-
-def _player_rating(p):
-    """Build an OpenSkill Rating object from a player row, using defaults if mu/sigma are null."""
-    mu_val = p['mu'] if ('mu' in p and p['mu'] is not None) else OS_DEFAULT_MU
-    sigma_val = p['sigma'] if ('sigma' in p and p['sigma'] is not None) else OS_DEFAULT_SIGMA
-    return OS_MODEL.rating(mu=float(mu_val), sigma=float(sigma_val), name=p['name'])
-
-
-def _os_rate_teams(w_players, l_players):
-    """Run the Plackett-Luce update. Returns (new_w_ratings, new_l_ratings)."""
-    w_ratings = [_player_rating(p) for p in w_players]
-    l_ratings = [_player_rating(p) for p in l_players]
-    # ranks=[0,1] means team 0 beats team 1
-    new_w, new_l = OS_MODEL.rate([w_ratings, l_ratings], ranks=[0, 1])
-    return new_w, new_l
-
+            details = json.loads(m['rating_details']) if m.get('rating_details') else {}
+            if old_name in details.get('players', {}):
+                details['players'][new_name] = details['players'].pop(old_name)
+            query('UPDATE matches SET team1=?, team2=?, mmr_changes=?, rating_details=? WHERE id=?',
+                  (json.dumps(t1), json.dumps(t2), json.dumps(changes), json.dumps(details), m['id']), commit=True)
 
 def _fmt_delta(n):
     return f'+{n}' if n >= 0 else f'{n}'
 
 
+def _stats_by_name(players, stats):
+    if not stats:
+        return None
+    by_id = {p['id']: p['name'] for p in players}
+    if len(stats) != len(players) or {row['player_id'] for row in stats} != set(by_id):
+        raise ValueError('Military stats no longer match the complete roster.')
+    return {by_id[row['player_id']]: {'units_killed': row['units_killed'], 'units_lost': row['units_lost']}
+            for row in stats}
+
+
+def calculate_match(w_players, l_players, stats=None, version='military-v2'):
+    new_w, new_l, details = rate_match(w_players, l_players,
+                                      _stats_by_name(w_players + l_players, stats), version=version)
+    changes = {}
+    for p, r in zip(w_players + l_players, new_w + new_l):
+        old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
+        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
+        changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
+    return changes, details
+
+
 def preview_openskill_deltas(w_players, l_players):
     """Compute expected per-player MMR deltas without touching the DB."""
-    new_w, new_l = _os_rate_teams(w_players, l_players)
-    changes = {}
-    for p, r in zip(w_players, new_w):
-        old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
-        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
-        changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
-    for p, r in zip(l_players, new_l):
-        old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
-        new_mmr = ordinal_to_mmr(r.mu, r.sigma)
-        changes[p['name']] = _fmt_delta(new_mmr - old_mmr)
-    return changes
+    return calculate_match(w_players, l_players)[0]
 
 
-def apply_openskill_match(w_players, l_players, update_counts=True):
+def apply_openskill_match(w_players, l_players, update_counts=True, stats=None, version='military-v2'):
     """Rate a match and persist mu/sigma/mmr (and optionally wins/losses). Returns changes dict."""
-    new_w, new_l = _os_rate_teams(w_players, l_players)
+    new_w, new_l, details = rate_match(w_players, l_players,
+                                      _stats_by_name(w_players + l_players, stats), version=version)
     changes = {}
     for p, r in zip(w_players, new_w):
         old_mmr = p['mmr'] if p.get('mmr') is not None else DEFAULT_MMR
@@ -262,36 +300,67 @@ def apply_openskill_match(w_players, l_players, update_counts=True):
         else:
             query('UPDATE players SET mu=?, sigma=?, mmr=? WHERE id=?',
                   (r.mu, r.sigma, new_mmr, p['id']), commit=True)
-    return changes
+    return changes, details
 
 
 def recalc_all_openskill():
-    """Reset every player to fresh rating and replay every approved match in chronological order."""
-    query('UPDATE players SET mu=?, sigma=?, mmr=?, wins=0, losses=0',
-          (OS_DEFAULT_MU, OS_DEFAULT_SIGMA, DEFAULT_MMR), commit=True)
-    matches = query("SELECT * FROM matches WHERE status='approved' ORDER BY id ASC")
-    for m in matches:
-        t1_names = json.loads(m['team1'])
-        t2_names = json.loads(m['team2'])
-        w_names = t1_names if m['winner'] == 'team1' else t2_names
-        l_names = t2_names if m['winner'] == 'team1' else t1_names
-        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
-        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
-        w_players = [p for p in w_players if p]
-        l_players = [p for p in l_players if p]
-        if not w_players or not l_players:
-            continue
-        changes = apply_openskill_match(w_players, l_players, update_counts=True)
-        query('UPDATE matches SET mmr_changes=? WHERE id=?',
-              (json.dumps(changes), m['id']), commit=True)
-    return len(matches)
+    """Replay the recorded formula and approval order, under the same lock as approval."""
+    with rating_transaction():
+        query('UPDATE players SET mu=?, sigma=?, mmr=?, wins=0, losses=0',
+              (OS_DEFAULT_MU, OS_DEFAULT_SIGMA, DEFAULT_MMR), commit=True)
+        matches = query("SELECT * FROM matches WHERE status='approved' ORDER BY rated_order ASC, id ASC")
+        replayed = 0
+        for m in matches:
+            w_players, l_players = match_players(m)
+            if not w_players or not l_players:
+                # Never silently turn an old game into a match with an incomplete team.
+                query('UPDATE matches SET mmr_changes=?,rating_details=? WHERE id=?',
+                      ('{}', json.dumps({'replay_skipped': 'A player was deleted.'}), m['id']), commit=True)
+                continue
+            changes, details = apply_openskill_match(w_players, l_players, update_counts=True,
+                stats=json.loads(m['military_stats']) if m.get('military_stats') else None,
+                version=m.get('rating_version') or 'openskill-v1')
+            query('UPDATE matches SET mmr_changes=?,rating_details=? WHERE id=?',
+                  (json.dumps(changes), json.dumps(details), m['id']), commit=True)
+            replayed += 1
+    return replayed
+
+
+def match_players(match):
+    names1, names2 = json.loads(match['team1']), json.loads(match['team2'])
+    if not names1 or not names2 or len(set(names1 + names2)) != len(names1 + names2):
+        return [], []
+    t1 = [query('SELECT * FROM players WHERE name=?', (name,), one=True) for name in names1]
+    t2 = [query('SELECT * FROM players WHERE name=?', (name,), one=True) for name in names2]
+    if any(p is None for p in t1 + t2):
+        return [], []
+    return (t1, t2) if match['winner'] == 'team1' else (t2, t1)
+
+
+def next_rated_order():
+    row = query('SELECT MAX(rated_order) AS n FROM matches', one=True)
+    return (row['n'] or 0) + 1
+
+
+def validated_web_rosters(ids1, ids2, winner, players):
+    if not ids1 or not ids2:
+        raise ValueError('Both teams need at least one player.')
+    ids = ids1 + ids2
+    if not 2 <= len(ids) <= 10:
+        raise ValueError('Select 2 to 10 players.')
+    if len(set(ids)) != len(ids):
+        raise ValueError('Each player may appear only once in a match.')
+    by_id = {str(p['id']): p for p in players}
+    if not set(ids).issubset(by_id):
+        raise ValueError('Unknown player. Refresh the roster and try again.')
+    if winner not in ('team1', 'team2'):
+        raise ValueError('Select a winner.')
+    return [by_id[pid] for pid in ids1], [by_id[pid] for pid in ids2]
 
 def team_avg_mmr(players_list):
     if not players_list:
         return 0
     return sum(p['mmr'] for p in players_list) / len(players_list)
-
-HANDICAP_FACTOR = 0.5  # Tunable: controls how much extra avg MMR the smaller team gets
 
 def balance_teams(player_ids):
     players = []
@@ -307,30 +376,12 @@ def balance_teams(player_ids):
     half = n // 2
     sizes = [half] if n % 2 == 0 else [half, half + 1]
     unequal = (n % 2 != 0)
-    # Calculate handicap target for unequal teams
-    if unequal:
-        all_mmr_avg = sum(p['mmr'] for p in players) / n
-        size_ratio = (half + 1) / half  # larger / smaller
-        target_handicap = all_mmr_avg * (size_ratio - 1) * HANDICAP_FACTOR
-    else:
-        target_handicap = 0
     for sz in sizes:
         for combo in combinations(range(n), sz):
             t1 = [players[i] for i in combo]
             t2 = [players[i] for i in range(n) if i not in combo]
-            avg1 = team_avg_mmr(t1)
-            avg2 = team_avg_mmr(t2)
-            if unequal:
-                # Identify which team is smaller
-                if len(t1) <= len(t2):
-                    small_avg, large_avg = avg1, avg2
-                else:
-                    small_avg, large_avg = avg2, avg1
-                # Smaller team should have higher avg; minimize distance to target
-                actual_diff = small_avg - large_avg
-                score = abs(actual_diff - target_handicap)
-            else:
-                score = abs(avg1 - avg2)
+            # Predictions account for team size and each player's uncertainty.
+            score = abs(predict_win(t1, t2)[0] - 0.5)
             if score < best_score:
                 best_score = score
                 best_t1, best_t2 = t1, t2
@@ -342,14 +393,35 @@ def balance_teams(player_ids):
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get('is_admin'):
-            return redirect(url_for('admin_login'))
-        login_time = session.get('admin_login_time')
-        if login_time is None or time.time() - login_time > ADMIN_SESSION_TIMEOUT:
-            session.clear()
+        if not admin_authenticated():
             return redirect(url_for('admin_login'))
         return f(*args, **kwargs)
     return decorated
+
+
+def admin_authenticated():
+    if not session.get('is_admin'):
+        return False
+    login_time = session.get('admin_login_time')
+    if login_time is None or time.time() - login_time > ADMIN_SESSION_TIMEOUT:
+        session.clear()
+        return False
+    return True
+
+
+def remove_match(match_id):
+    # Retain receipts even after deletion, so a retried companion report cannot resurrect a game.
+    query('UPDATE companion_submissions SET match_id=NULL WHERE match_id=?', (match_id,), commit=True)
+    query('DELETE FROM matches WHERE id=?', (match_id,), commit=True)
+
+
+def remove_player(player):
+    # Match history uses names; preserving referenced players prevents accidentally reattaching
+    # old matches to a new person who later registers the same name.
+    for match in query('SELECT team1,team2 FROM matches'):
+        if player['name'] in json.loads(match['team1']) + json.loads(match['team2']):
+            raise ValueError('This player has match history. Delete their matches before deleting the player.')
+    query('DELETE FROM players WHERE id=?', (player['id'],), commit=True)
 
 
 # The stylesheet now lives in static/style.css (linked from page()).
@@ -393,6 +465,7 @@ NAV_ITEMS = [
     ('/submit_match', 'Report', 'match'),
     ('/balance', 'Balance', 'balance'),
     ('/history', 'History', 'history'),
+    ('/companion', 'Companion', 'companion'),
 ]
 
 
@@ -436,6 +509,28 @@ def flash_html(msg, type='success'):
     tag = 'Done' if type == 'success' else 'Error'
     return (f'<div class="flash flash-{type}"><span class="tag">{tag}</span>'
             f'<span>{esc(msg)}</span></div>')
+
+
+def companion_download_url():
+    configured = os.environ.get('COMPANION_DOWNLOAD_URL')
+    if configured:
+        return configured
+    filename = 'downloads/Empire-Earth-Companion-0.1.2.exe'
+    if os.path.isfile(os.path.join(app.static_folder, filename)):
+        return url_for('static', filename=filename)
+    return None
+
+
+def match_evidence_content(match):
+    stats = json.loads(match['military_stats']) if match.get('military_stats') else []
+    rows = []
+    for stat in stats:
+        player = query('SELECT name FROM players WHERE id=?', (stat['player_id'],), one=True)
+        rows.append(dict(stat, name=player['name'] if player else f'Deleted player #{stat["player_id"]}'))
+    return render_template('match_evidence.html', stats=rows,
+        evidence=json.loads(match['evidence']) if match.get('evidence') else None,
+        rating_details=json.loads(match['rating_details']) if match.get('rating_details') else {},
+        rating_version=match.get('rating_version') or 'openskill-v1', source=match.get('source') or 'web')
 
 
 def _delta_span(chg):
@@ -585,7 +680,7 @@ def balance_form(players):
     return f'''
 <h1>Team balancer</h1>
 <div class="page-sub" style="margin-bottom:24px">Select who's playing.
-Uneven counts get an automatic MMR handicap.</div>
+The split targets a 50% win probability using skill, confidence and team size.</div>
 <form method="post">{csrf_field()}
 <div class="panel" style="margin-bottom:24px">
   <div class="panel-head"><span class="panel-title">Pool</span></div>
@@ -614,10 +709,10 @@ def balance_result(t1, t2, diff, handicapped, deltas_t1_wins, deltas_t2_wins):
         return (f'<div><div class="stake-title{" accent" if accent else ""}">{label}</div>'
                 f'<div class="rows">{r1}<div class="sep"></div>{r2}</div></div>')
 
-    meta = (f'{len(t1)}v{len(t2)} · handicap applied' if handicapped
-            else f'MMR diff {diff:.0f}')
-    note = ('<div class="hint" style="padding:0 20px 18px">The smaller team is given a higher '
-            'average MMR to compensate for the numbers disadvantage.</div>') if handicapped else ''
+    p1, p2 = predict_win(t1, t2)
+    meta = f'{len(t1)}v{len(t2)} · win chance {p1:.0%} / {p2:.0%}'
+    note = ('<div class="hint" style="padding:0 20px 18px">Uneven teams can remain uneven in strength. '
+            'These probabilities are model estimates, not guarantees.</div>') if handicapped else ''
     return f'''
 <div class="panel" style="margin-bottom:24px">
   <div class="panel-head"><span class="panel-title">Suggested split</span>
@@ -645,7 +740,7 @@ def history_content():
     else:
         matches = query('SELECT * FROM matches ORDER BY id DESC')
     is_admin = bool(session.get('is_admin'))
-    most_recent = query('SELECT id FROM matches ORDER BY id DESC LIMIT 1', one=True)
+    most_recent = query("SELECT id FROM matches WHERE status='approved' ORDER BY rated_order DESC,id DESC LIMIT 1", one=True)
     most_recent_id = most_recent['id'] if most_recent else None
 
     def filt(key, label):
@@ -707,6 +802,7 @@ def history_content():
     <div class="versus-divider"><span class="vs" style="color:var(--line-strong)">VS</span></div>
     {side(t2, not t1_won, 'Team 2')}
   </div>
+  {match_evidence_content(m)}
   {foot}
 </div>'''
 
@@ -762,6 +858,7 @@ def admin_panel_content(pending, players):
     <div class="who">{esc(", ".join(t1))} <span class="vs-lite">vs</span> {esc(", ".join(t2))}
       <span class="match-meta" style="color:var(--win);margin-left:6px">{winner_label}</span></div>
     <div class="deltas">{deltas}</div>
+    {match_evidence_content(m)}
   </div>
   <div class="btn-row">
     <form method="post" action="/admin/approve/{m["id"]}" style="margin:0">{csrf_field()}
@@ -776,7 +873,7 @@ def admin_panel_content(pending, players):
 
     rows = ''
     for p in players:
-        js_name = p['name'].replace("'", "\\'")
+        js_name = esc(json.dumps(p['name']))
         unranked = ('<span class="tag-unranked">unranked</span>'
                     if p['wins'] + p['losses'] == 0 else '')
         rows += f'''<div class="prow-grid">
@@ -789,11 +886,11 @@ def admin_panel_content(pending, players):
       <input name="mmr" type="number" value="{p["mmr"]}" class="mmr-input">
       <button class="btn btn-solid-2 btn-sm">Set</button></form>
     <button class="btn btn-ghost btn-sm"
-      onclick="adminRenamePlayer({p["id"]}, '{js_name}', '{csrf_token()}')">Rename</button>
+      onclick="adminRenamePlayer({p["id"]}, {js_name}, '{csrf_token()}')">Rename</button>
     <form method="post" action="/admin/reset/{p["id"]}" style="margin:0">{csrf_field()}
       <button class="btn btn-ghost btn-sm">Reset</button></form>
     <button class="btn btn-danger btn-sm"
-      onclick="adminDeletePlayer({p["id"]}, '{js_name}', '{csrf_token()}')">Del</button>
+      onclick="adminDeletePlayer({p["id"]}, {js_name}, '{csrf_token()}')">Del</button>
   </div>
 </div>'''
 
@@ -802,6 +899,7 @@ def admin_panel_content(pending, players):
   <div><h1>Admin</h1>
   <div class="page-sub">{len(pending)} awaiting review · {len(players)} players</div></div>
   <div class="btn-row">
+    <a href="/admin/companion" class="btn btn-ghost btn-sm">Companion devices</a>
     <a href="/add_player" class="btn btn-sm" style="padding:11px 16px">+ Add player</a>
     <form method="post" action="/admin/recalculate_mmr" style="margin:0">{csrf_field()}
       <button class="btn btn-ghost btn-sm" style="padding:11px 16px"
@@ -849,6 +947,7 @@ def edit_match_content(m, players, old_t1, old_t2, old_winner, msg):
 ratings are recalculated from scratch.</div>
 {msg}
 <form method="post">{csrf_field()}
+<input type="hidden" name="match_id" value="{m['id']}">
 <div class="versus" style="margin-bottom:20px">
   <div class="panel">
     <div class="panel-head accent"><span class="panel-title accent">Team 1</span>
@@ -886,18 +985,17 @@ def rename_player_route():
         return redirect(url_for('admin_panel'))
     pid = request.form.get('player_id')
     new_name = request.form.get('new_name', '').strip()
-    redirect_to = request.form.get('redirect', '/')
-    if not pid or not new_name:
-        return redirect(redirect_to)
-    player = query('SELECT * FROM players WHERE id = ?', (int(pid),), one=True)
-    if not player:
-        return redirect(redirect_to)
-    old_name = player['name']
-    if old_name == new_name:
+    redirect_to = '/admin/panel' if request.form.get('redirect') == '/admin/panel' else '/'
+    if not pid or not pid.isdigit() or not new_name or len(new_name) > 80:
         return redirect(redirect_to)
     try:
-        query('UPDATE players SET name=? WHERE id=?', (new_name, int(pid)), commit=True)
-        rename_player_in_matches(old_name, new_name)
+        with rating_transaction():
+            player = query('SELECT * FROM players WHERE id = ?', (int(pid),), one=True)
+            if not player or player['name'] == new_name:
+                return redirect(redirect_to)
+            old_name = player['name']
+            query('UPDATE players SET name=? WHERE id=?', (new_name, int(pid)), commit=True)
+            rename_player_in_matches(old_name, new_name)
         logger.info(f'Player renamed: {old_name} -> {new_name}')
     except Exception as e:
         logger.error(f'Rename failed: {e}')
@@ -909,32 +1007,44 @@ def delete_player_route():
     if not check_csrf():
         return redirect(url_for('admin_panel'))
     pid = request.form.get('player_id')
-    redirect_to = request.form.get('redirect', '/')
-    if not pid:
+    redirect_to = '/admin/panel' if request.form.get('redirect') == '/admin/panel' else '/'
+    if not pid or not pid.isdigit():
         return redirect(redirect_to)
     try:
-        query('DELETE FROM players WHERE id=?', (int(pid),), commit=True)
+        with rating_transaction():
+            player = query('SELECT * FROM players WHERE id=?', (int(pid),), one=True)
+            if player:
+                remove_player(player)
         logger.info(f'Player deleted: id={pid}')
+    except ValueError as error:
+        return page('Player has match history', flash_html(str(error), 'error') +
+                    '<a class="btn btn-ghost" href="/admin/panel">Back to admin</a>', 'admin'), 409
     except Exception as e:
         logger.error(f'Delete failed: {e}')
     return redirect(redirect_to)
 
 @app.route('/api/players/rename', methods=['POST'])
 def api_rename_player():
-    if not session.get('is_admin'):
+    if not admin_authenticated():
         return jsonify({'error': 'Admin authentication required'}), 403
+    if not check_csrf():
+        return jsonify(error='Invalid CSRF token.'), 403
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(error='A JSON object is required.'), 400
     player_id = data.get('player_id')
-    new_name = data.get('new_name', '').strip()
-    if not player_id or not new_name:
+    new_name = data.get('new_name', '')
+    if type(player_id) is not int or not isinstance(new_name, str) or not 0 < len(new_name.strip()) <= 80:
         return jsonify({'error': 'player_id and new_name are required'}), 400
-    player = query('SELECT * FROM players WHERE id = ?', (int(player_id),), one=True)
-    if not player:
-        return jsonify({'error': 'Player not found'}), 404
-    old_name = player['name']
+    new_name = new_name.strip()
     try:
-        query('UPDATE players SET name=? WHERE id=?', (new_name, int(player_id)), commit=True)
-        rename_player_in_matches(old_name, new_name)
+        with rating_transaction():
+            player = query('SELECT * FROM players WHERE id=?', (player_id,), one=True)
+            if not player:
+                return jsonify(error='Player not found'), 404
+            old_name = player['name']
+            query('UPDATE players SET name=? WHERE id=?', (new_name, player_id), commit=True)
+            rename_player_in_matches(old_name, new_name)
         return jsonify({'success': True, 'old_name': old_name, 'new_name': new_name}), 200
     except Exception as e:
         logger.error(f'API error: {e}')
@@ -942,14 +1052,19 @@ def api_rename_player():
 
 @app.route('/api/players/<name>', methods=['DELETE'])
 def api_delete_player(name):
-    if not session.get('is_admin'):
+    if not admin_authenticated():
         return jsonify({'error': 'Admin authentication required'}), 403
-    player = query('SELECT * FROM players WHERE name = ?', (name,), one=True)
-    if not player:
-        return jsonify({'error': 'Player not found'}), 404
+    if not check_csrf():
+        return jsonify(error='Invalid CSRF token.'), 403
     try:
-        query('DELETE FROM players WHERE name=?', (name,), commit=True)
+        with rating_transaction():
+            player = query('SELECT * FROM players WHERE name=?', (name,), one=True)
+            if not player:
+                return jsonify({'error': 'Player not found'}), 404
+            remove_player(player)
         return jsonify({'success': True, 'deleted': name}), 200
+    except ValueError as error:
+        return jsonify(error=str(error)), 409
     except Exception as e:
         logger.error(f'API error: {e}')
         return jsonify({'error': 'Internal server error'}), 500
@@ -961,11 +1076,12 @@ def add_player():
     if request.method == 'POST':
         if not check_csrf():
             msg = flash_html('Invalid request.', 'error')
-        elif not (name := request.form.get('name','').strip()):
-            msg = flash_html('Please enter a name.', 'error')
+        elif not (name := request.form.get('name','').strip()) or len(name) > 80:
+            msg = flash_html('Enter a name from 1 to 80 characters.', 'error')
         else:
             try:
-                query('INSERT INTO players (name, mmr) VALUES (?, ?)', (name, DEFAULT_MMR), commit=True)
+                with rating_transaction():
+                    query('INSERT INTO players (name, mmr) VALUES (?, ?)', (name, DEFAULT_MMR), commit=True)
                 msg = flash_html(f'Player {name} added with {DEFAULT_MMR} MMR!')
             except:
                 msg = flash_html(f'Player already exists.', 'error')
@@ -980,35 +1096,32 @@ def submit_match():
       if not check_csrf():
             msg = flash_html('Invalid request.', 'error')
       else:
-        t1 = request.form.getlist('team1')
-        t2 = request.form.getlist('team2')
-        winner = request.form.get('winner')
-        if not t1 or not t2:
-            msg = flash_html('Both teams need at least one player.', 'error')
-        elif set(t1) & set(t2):
-            msg = flash_html('A player cannot be on both teams.', 'error')
-        elif winner not in ('team1','team2'):
-            msg = flash_html('Select a winner.', 'error')
-        else:
-            t1_names = [p['name'] for p in players if str(p['id']) in t1]
-            t2_names = [p['name'] for p in players if str(p['id']) in t2]
-            t1_players = [p for p in players if str(p['id']) in t1]
-            t2_players = [p for p in players if str(p['id']) in t2]
-            w_team = t1_players if winner == 'team1' else t2_players
-            l_team = t2_players if winner == 'team1' else t1_players
-            status = 'pending' if REQUIRE_MATCH_APPROVAL else 'approved'
-            if status == 'approved':
-                changes = apply_openskill_match(w_team, l_team, update_counts=True)
-            else:
-                # Preview only; real update happens on approval so ratings stay fresh.
-                changes = preview_openskill_deltas(w_team, l_team)
-            query('INSERT INTO matches (team1, team2, winner, mmr_changes, status) VALUES (?,?,?,?,?)',
-                  (json.dumps(t1_names), json.dumps(t2_names), winner, json.dumps(changes), status), commit=True)
+        try:
+            with rating_transaction():
+                players = query('SELECT * FROM players ORDER BY name')
+                winner = request.form.get('winner')
+                t1_players, t2_players = validated_web_rosters(request.form.getlist('team1'),
+                    request.form.getlist('team2'), winner, players)
+                w_team, l_team = (t1_players, t2_players) if winner == 'team1' else (t2_players, t1_players)
+                status = 'pending' if REQUIRE_MATCH_APPROVAL else 'approved'
+                if status == 'approved':
+                    changes, details = apply_openskill_match(w_team, l_team)
+                    rated_order = next_rated_order()
+                else:
+                    changes, details = calculate_match(w_team, l_team)
+                    rated_order = None
+                query('''INSERT INTO matches
+                    (team1,team2,winner,mmr_changes,status,rating_version,rating_details,rated_order)
+                    VALUES (?,?,?,?,?,?,?,?)''',
+                    (json.dumps([p['name'] for p in t1_players]), json.dumps([p['name'] for p in t2_players]),
+                     winner, json.dumps(changes), status, 'military-v2', json.dumps(details), rated_order), commit=True)
             summary = ', '.join(f"{n} {d}" for n, d in changes.items())
             if status == 'approved':
                 msg = flash_html(f'Match recorded! MMR changes: {summary}')
             else:
                 msg = flash_html(f'Match submitted for admin approval. Estimated changes: {summary}')
+        except ValueError as error:
+            msg = flash_html(str(error), 'error')
     content = submit_match_content(msg, players)
     return page('Submit Match', content, 'match')
 
@@ -1022,8 +1135,10 @@ def balance():
             result = flash_html('Invalid request.', 'error')
       else:
         sel = request.form.getlist('players')
-        if len(sel) < 2:
-            result = flash_html('Select at least 2 players.', 'error')
+        if not 2 <= len(sel) <= 10 or len(set(sel)) != len(sel):
+            result = flash_html('Select 2 to 10 different players.', 'error')
+        elif not set(sel).issubset({str(p['id']) for p in players}):
+            result = flash_html('Unknown player. Refresh the roster and try again.', 'error')
         else:
             t1, t2, diff, handicapped = balance_teams([int(x) for x in sel])
             if t1 and t2:
@@ -1051,6 +1166,7 @@ def admin_login():
             session['is_admin'] = True
             session['admin_login_time'] = time.time()
             return redirect(url_for('admin_panel'))
+        else:
             msg = flash_html('Wrong password.', 'error')
     content = admin_login_content(msg)
     return page('Admin', content, 'admin')
@@ -1068,21 +1184,17 @@ def admin_panel():
 def approve_match(match_id):
     if not check_csrf():
         return redirect(url_for('admin_panel'))
-    m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'pending'), one=True)
-    if m:
-        t1_names = json.loads(m['team1'])
-        t2_names = json.loads(m['team2'])
-        w_names = t1_names if m['winner'] == 'team1' else t2_names
-        l_names = t2_names if m['winner'] == 'team1' else t1_names
-        w_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in w_names]
-        l_players = [query('SELECT * FROM players WHERE name=?', (n,), one=True) for n in l_names]
-        w_players = [p for p in w_players if p]
-        l_players = [p for p in l_players if p]
-        if w_players and l_players:
-            # Recompute against CURRENT ratings (ignore stale preview).
-            changes = apply_openskill_match(w_players, l_players, update_counts=True)
-            query('UPDATE matches SET status=?, mmr_changes=? WHERE id=?',
-                  ('approved', json.dumps(changes), match_id), commit=True)
+    with rating_transaction():
+        m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'pending'), one=True)
+        if m:
+            w_players, l_players = match_players(m)
+            if not w_players or not l_players:
+                return page('Approval failed', flash_html('The complete roster is no longer available. Deny this report and submit a corrected match.', 'error'), 'admin'), 409
+            changes, details = apply_openskill_match(w_players, l_players,
+                stats=json.loads(m['military_stats']) if m.get('military_stats') else None,
+                version=m.get('rating_version') or 'openskill-v1')
+            query('UPDATE matches SET status=?,mmr_changes=?,rating_details=?,rated_order=? WHERE id=?',
+                  ('approved', json.dumps(changes), json.dumps(details), next_rated_order(), match_id), commit=True)
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/deny/<int:match_id>', methods=['POST'])
@@ -1090,7 +1202,8 @@ def approve_match(match_id):
 def deny_match(match_id):
     if not check_csrf():
         return redirect(url_for('admin_panel'))
-    query('UPDATE matches SET status=? WHERE id=?', ('denied', match_id), commit=True)
+    with rating_transaction():
+        query('UPDATE matches SET status=? WHERE id=? AND status=?', ('denied', match_id, 'pending'), commit=True)
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/delete_last_match', methods=['POST'])
@@ -1098,12 +1211,12 @@ def deny_match(match_id):
 def delete_last_match():
     if not check_csrf():
         return redirect(url_for('history'))
-    m = query("SELECT * FROM matches WHERE status='approved' ORDER BY id DESC LIMIT 1", one=True)
-    if not m:
-        return redirect(url_for('history'))
-    query('DELETE FROM matches WHERE id=?', (m['id'],), commit=True)
-    # OpenSkill updates aren't cleanly reversible, so replay from scratch.
-    replayed = recalc_all_openskill()
+    with rating_transaction():
+        m = query("SELECT * FROM matches WHERE status='approved' ORDER BY rated_order DESC,id DESC LIMIT 1", one=True)
+        if not m:
+            return redirect(url_for('history'))
+        remove_match(m['id'])
+        replayed = recalc_all_openskill()
     logger.info(f'Deleted last match #{m["id"]} and replayed {replayed} approved matches')
     return redirect(url_for('history'))
 
@@ -1114,13 +1227,12 @@ def delete_match(match_id):
     """Delete any match by ID and recalculate all MMR from scratch."""
     if not check_csrf():
         return redirect(url_for('history'))
-    m = query('SELECT * FROM matches WHERE id=?', (match_id,), one=True)
-    if not m:
-        return redirect(url_for('history'))
-    # Delete the match
-    query('DELETE FROM matches WHERE id=?', (match_id,), commit=True)
-    logger.info(f'Deleted match #{match_id}, recalculating all MMR...')
-    replayed = recalc_all_openskill()
+    with rating_transaction():
+        m = query('SELECT * FROM matches WHERE id=?', (match_id,), one=True)
+        if not m:
+            return redirect(url_for('history'))
+        remove_match(match_id)
+        replayed = recalc_all_openskill() if m['status'] == 'approved' else 0
     logger.info(f'MMR recalculated after deleting match #{match_id}, replayed {replayed} matches')
     return redirect(url_for('history'))
 
@@ -1130,17 +1242,23 @@ def delete_denied_match(match_id):
     """Delete a denied match. No MMR recalculation needed since denied matches don't affect ratings."""
     if not check_csrf():
         return redirect(url_for('history'))
-    m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'denied'), one=True)
-    if not m:
-        return redirect(url_for('history'))
-    query('DELETE FROM matches WHERE id=?', (match_id,), commit=True)
+    with rating_transaction():
+        m = query('SELECT * FROM matches WHERE id=? AND status=?', (match_id, 'denied'), one=True)
+        if not m:
+            return redirect(url_for('history'))
+        remove_match(match_id)
     logger.info(f'Deleted denied match #{match_id}')
     return redirect(url_for('history'))
 
 @app.route('/admin/edit_last_match', methods=['GET','POST'])
 @admin_required
 def edit_last_match():
-    m = query("SELECT * FROM matches WHERE status='approved' ORDER BY id DESC LIMIT 1", one=True)
+    posted_id = request.form.get('match_id', '')
+    if request.method == 'POST' and not posted_id.isdigit():
+        return redirect(url_for('history'))
+    m = (query("SELECT * FROM matches WHERE id=? AND status='approved'", (int(posted_id),), one=True)
+         if request.method == 'POST' else
+         query("SELECT * FROM matches WHERE status='approved' ORDER BY rated_order DESC,id DESC LIMIT 1", one=True))
     if not m:
         return redirect(url_for('history'))
     players = query('SELECT * FROM players ORDER BY name')
@@ -1149,24 +1267,28 @@ def edit_last_match():
       if not check_csrf():
             msg = flash_html('Invalid request.', 'error')
       else:
-        t1_ids = request.form.getlist('team1')
-        t2_ids = request.form.getlist('team2')
-        new_winner = request.form.get('winner')
-        if not t1_ids or not t2_ids:
-            msg = flash_html('Both teams need at least one player.', 'error')
-        elif set(t1_ids) & set(t2_ids):
-            msg = flash_html('A player cannot be on both teams.', 'error')
-        elif new_winner not in ('team1','team2'):
-            msg = flash_html('Select a winner.', 'error')
-        else:
-            t1_names = [p['name'] for p in players if str(p['id']) in t1_ids]
-            t2_names = [p['name'] for p in players if str(p['id']) in t2_ids]
-            # Update match row first, then replay all approved matches with OpenSkill.
-            query('UPDATE matches SET team1=?, team2=?, winner=? WHERE id=?',
-                  (json.dumps(t1_names), json.dumps(t2_names), new_winner, m['id']), commit=True)
-            replayed = recalc_all_openskill()
+        try:
+            with rating_transaction():
+                m = query("SELECT * FROM matches WHERE id=? AND status='approved'", (m['id'],), one=True)
+                if not m:
+                    return redirect(url_for('history'))
+                players = query('SELECT * FROM players ORDER BY name')
+                new_winner = request.form.get('winner')
+                t1, t2 = validated_web_rosters(request.form.getlist('team1'), request.form.getlist('team2'), new_winner, players)
+                names1, names2 = [p['name'] for p in t1], [p['name'] for p in t2]
+                roster_changed = set(names1) != set(json.loads(m['team1'])) or set(names2) != set(json.loads(m['team2']))
+                # Keep original order for a winner-only correction; OpenSkill replay is order-sensitive.
+                if not roster_changed:
+                    names1, names2 = json.loads(m['team1']), json.loads(m['team2'])
+                query('UPDATE matches SET team1=?,team2=?,winner=? WHERE id=?',
+                      (json.dumps(names1), json.dumps(names2), new_winner, m['id']), commit=True)
+                if roster_changed:
+                    query('UPDATE matches SET military_stats=NULL,evidence=NULL,rating_details=NULL WHERE id=?', (m['id'],), commit=True)
+                replayed = recalc_all_openskill()
             logger.info(f'Edited match #{m["id"]} and replayed {replayed} approved matches')
             return redirect(url_for('history'))
+        except ValueError as error:
+            msg = flash_html(str(error), 'error')
     old_t1 = json.loads(m['team1'])
     old_t2 = json.loads(m['team2'])
     old_winner = m['winner']
@@ -1180,8 +1302,18 @@ def set_mmr():
         return redirect(url_for('admin_panel'))
     pid = request.form.get('player_id')
     mmr = request.form.get('mmr')
-    if pid and mmr:
-        query('UPDATE players SET mmr=? WHERE id=?', (int(mmr), int(pid)), commit=True)
+    try:
+        pid, mmr = int(pid), int(mmr)
+        if not -100000 <= mmr <= 100000:
+            return redirect(url_for('admin_panel'))
+    except (TypeError, ValueError):
+        return redirect(url_for('admin_panel'))
+    with rating_transaction():
+        player = query('SELECT * FROM players WHERE id=?', (pid,), one=True)
+        if player:
+            sigma = player['sigma'] if player.get('sigma') is not None else OS_DEFAULT_SIGMA
+            mu = (mmr - RATING_OFFSET) / RATING_SCALE + 3 * sigma
+            query('UPDATE players SET mmr=?,mu=?,sigma=? WHERE id=?', (mmr, mu, sigma, pid), commit=True)
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/reset/<int:player_id>', methods=['POST'])
@@ -1189,7 +1321,9 @@ def set_mmr():
 def reset_player(player_id):
     if not check_csrf():
         return redirect(url_for('admin_panel'))
-    query('UPDATE players SET mmr=?, wins=0, losses=0 WHERE id=?', (DEFAULT_MMR, player_id), commit=True)
+    with rating_transaction():
+        query('UPDATE players SET mmr=?,mu=?,sigma=?,wins=0,losses=0 WHERE id=?',
+              (DEFAULT_MMR, OS_DEFAULT_MU, OS_DEFAULT_SIGMA, player_id), commit=True)
     return redirect(url_for('admin_panel'))
 
 
@@ -1208,6 +1342,9 @@ def recalculate_mmr():
 def admin_logout():
     session.clear()
     return redirect(url_for('admin_login'))
+
+from companion_api import register_companion
+register_companion(app, sys.modules[__name__])
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 3000))

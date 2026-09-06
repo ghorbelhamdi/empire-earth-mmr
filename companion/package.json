@@ -1,0 +1,50 @@
+{
+  "name": "empire-earth-companion",
+  "version": "0.1.2",
+  "description": "Local post-game capture and reviewed ladder submissions for Empire Earth",
+  "main": "src/main.js",
+  "author": "Empire Earth MMR",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "build": "electron-builder --win portable --x64",
+    "dist": "npm run build",
+    "check:ocr": "node scripts/check-ocr.js",
+    "smoke": "electron . --smoke-test"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
+    "pngjs": "^7.0.0",
+    "tesseract.js": "7.0.0"
+  },
+  "devDependencies": {
+    "electron": "44.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "org.empiremmr.companion",
+    "productName": "Empire Earth Companion",
+    "artifactName": "Empire-Earth-Companion-${version}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "asarUnpack": [
+      "node_modules/tesseract.js/**",
+      "node_modules/tesseract.js-core/**",
+      "node_modules/@tesseract.js-data/**"
+    ],
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "requestExecutionLevel": "user"
+    }
+  }
+}
